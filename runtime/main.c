@@ -48,8 +48,8 @@ int g_opt_audio_eos_sample_count=1;   /* always on (cinematic clock ~2x and cut 
 char g_opt_pad_map[128]="";   /* physical-position button remapping, empty = identity */
 int g_opt_ctrl_api=0, g_opt_ctrl_index=0, g_opt_deadzone=7000;
 char g_opt_button_icons[16]="auto";
-int g_opt_mouse_aim=1, g_opt_mouse_sens=100;   /* [Input] mouse free aim (backend_win32.c mouse_apply) */
-char g_opt_mouse_buttons[64]="y,l,r,-,-";   /* left, right, middle, back, forward -> Switch buttons */   /* [Input] button_icons: auto, switch, xbox, ps4, ps5 (svc_fs.c romfs_apply_mods) */   /* [Input]: api 0 auto, 1 SDL2, 2 XInput */
+int g_opt_mouse_look=1, g_opt_mouse_sens=100, g_opt_mouse_invert_y=0, g_opt_mouse_deadzone=15;   /* [Input] mouse look (input_kbm.c) */
+char g_opt_mouse_buttons[64]="zr,zl,r,-,-";   /* left, right, middle, back, forward -> Switch buttons */   /* [Input] button_icons: auto, switch, xbox, ps4, ps5 (svc_fs.c romfs_apply_mods) */   /* [Input]: api 0 auto, 1 SDL2, 2 XInput */
 int g_opt_diag=0;
 /* vsync: on by default off Windows. Without it the 60.00 FPS limiter beats against the display (59.95 Hz here): about once a
    second a frame came in the same refresh as the one before and the next refresh showed the old one again (59 of 3600
@@ -250,7 +250,8 @@ static const char* const INI_ALIAS[][2]={
   {"perfil","profile"},{"compilador_prioridad_baja","low_priority_shader_compiler"},{"vsync_forzado","forced_vsync"},
   {"grabacion_fluida","smooth_recording"},{"grabacion_fps","recording_fps"},{"lsfg_objetivo","lsfg_target"},
   {"lsfg_multiplicador","lsfg_multiplier"},{"lsfg_flujo","lsfg_flow"},{"lsfg_resolucion","lsfg_resolution"},
-  {"lossless_ruta","lossless_path"},{"controles","touch_controls"},{"controles_opacidad","touch_controls_opacity"},{NULL,NULL}};
+  {"lossless_ruta","lossless_path"},{"controles","touch_controls"},{"controles_opacidad","touch_controls_opacity"},
+  {"mouse_aim","mouse_look"},{NULL,NULL}};   /* mouse_aim: the Metroid Dread mouse free aim that mouse look replaced */
 
 static const char* ini_norm(const char* k){ for(int i=0;INI_ALIAS[i][0];i++) if(!strcmp(k,INI_ALIAS[i][0])) return INI_ALIAS[i][1]; return k; }
 /* everything we read, so the rewrite keeps unknown keys */
@@ -266,9 +267,14 @@ static void env_switch(const char* name, int on);
 static void ini_apply(const char* k, const char* v){
     if(!strcmp(k,"docked")) g_opt_docked=atoi(v);
     else if(!strcmp(k,"controller_map")){ snprintf(g_opt_pad_map,sizeof g_opt_pad_map,"%s",v); }
-    else if(!strcmp(k,"mouse_aim")) g_opt_mouse_aim=atoi(v)!=0;
+    else if(!strcmp(k,"mouse_look")) g_opt_mouse_look=atoi(v)!=0;
     else if(!strcmp(k,"mouse_sensitivity")){ g_opt_mouse_sens=atoi(v); if(g_opt_mouse_sens<10) g_opt_mouse_sens=10; if(g_opt_mouse_sens>1000) g_opt_mouse_sens=1000; }
-    else if(!strcmp(k,"mouse_buttons")){ snprintf(g_opt_mouse_buttons,sizeof g_opt_mouse_buttons,"%s",v); extern void mouse_map_reset(void); mouse_map_reset(); }
+    else if(!strcmp(k,"mouse_invert_y")) g_opt_mouse_invert_y=atoi(v)!=0;
+    else if(!strcmp(k,"mouse_deadzone")){ g_opt_mouse_deadzone=atoi(v); if(g_opt_mouse_deadzone<0) g_opt_mouse_deadzone=0; if(g_opt_mouse_deadzone>50) g_opt_mouse_deadzone=50; }
+    else if(!strcmp(k,"mouse_buttons")){
+      /* the Metroid Dread layout (left Y, right L for its free aim) means nothing in a first-person game: the current default */
+      if(!strcmp(v,"y,l,r,-,-")){ v="zr,zl,r,-,-"; ini_store(k,v); }
+      snprintf(g_opt_mouse_buttons,sizeof g_opt_mouse_buttons,"%s",v); extern void mouse_map_reset(void); mouse_map_reset(); }
     else if(!strcmp(k,"button_icons")) snprintf(g_opt_button_icons,sizeof g_opt_button_icons,"%s",v);
     else if(!strcmp(k,"controller_api")) g_opt_ctrl_api= !strcmp(v,"sdl")? 1 : !strcmp(v,"xinput")? 2 : 0;
     else if(!strcmp(k,"controller_index")){ g_opt_ctrl_index=atoi(v); if(g_opt_ctrl_index<0) g_opt_ctrl_index=0; }
@@ -393,9 +399,11 @@ static const IniOpt INI_FG[]={
   {NULL,NULL,NULL}};
 static const IniOpt INI_INPUT[]={
   {"controller_map","","16 comma-separated button destinations (0..15, -1 disabled); empty = default. Keyboard and sticks unchanged."},
-  {"mouse_aim","1","1 = mouse free aim: hold the right mouse button (the game's L, free aim) and move the mouse to aim\n;   in any direction; left click shoots (Y), middle click arms missiles (R). The cursor hides over the game"},
-  {"mouse_sensitivity","100","mouse free aim: how far the mouse moves for a full turn of the aim, in percent (10-1000)"},
-  {"mouse_buttons","y,l,r,-,-","mouse buttons left, right, middle, back, forward as Switch buttons: a b x y l r zl zr plus\n;   minus lstick rstick, - for none. The one set to l aims with the mouse while held"},
+  {"mouse_look","1","1 = the mouse turns the camera (the right stick) while the game window has focus. The cursor is\n;   held in the window and hidden; F1 (the in-game menu) or switching to another window frees it"},
+  {"mouse_sensitivity","100","mouse look: camera turn speed for the same mouse movement, in percent (10-1000)"},
+  {"mouse_invert_y","0","1 = moving the mouse up looks down"},
+  {"mouse_deadzone","15","mouse look: the smallest stick push any mouse movement makes, in percent (0-50). Raise it if slow\n;   mouse movement doesn't turn the camera, lower it if small movements turn it too far"},
+  {"mouse_buttons","zr,zl,r,-,-","mouse buttons left, right, middle, back, forward as Switch buttons: a b x y l r zl zr plus\n;   minus lstick rstick, - for none"},
   {"button_icons","auto","the game's button pictures: auto = from the controller connected at start (Xbox and Steam Deck:\n;   Xbox icons, DualShock 4: PS4, DualSense: PS5, Switch or none: the originals), or switch, xbox, ps4, ps5.\n;   Needs the icon packs in Metroid Prime 4 Beyond_data\\mods (the Play screen downloads them: Controls > Button icons)"},
   {"controller_api","auto","auto = SDL2 when SDL2.dll is next to the game (Bluetooth/USB Switch Pro, DualShock 4,\n;   DualSense, 8BitDo, Xbox...), else XInput. sdl or xinput to force one"},
   {"controller_index","0","0 = first connected controller, 1.. = that controller (in connection order) is player 1"},

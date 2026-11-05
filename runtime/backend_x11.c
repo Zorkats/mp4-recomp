@@ -7,6 +7,7 @@
    Also what the Xvfb tests run on (screenshots, scripted input). */
 #include "rt.h"
 #include "pad_remap.h"
+#include "input_kbm.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
@@ -20,11 +21,9 @@ static Display* dpy; static Window win; static Atom wm_delete, a_state, a_fs; st
 static volatile int g_ww=1280, g_wh=720; static int g_fullscreen=0, g_want_fs=1;
 static int g_seconds=0, g_maxframes=-1; static char g_shot[1024]; static u64 g_start; static u64 g_press=0, g_press_at=0, g_press_len=300;
 static char g_script[1024]; static char g_title[256]; static volatile int g_shot_req;
-static u64 keys_held;
+static int g_focused, g_grabbed;   /* mouse look: the pointer is grabbed and kept near the window's centre */
 extern int g_opt_fps;
 
-/* [Input] mouse_buttons: the game mouse (free aim, buttons) is the Windows backend's only; nothing to re-parse here */
-void mouse_map_reset(void){}
 void backend_ini(const char* k, const char* v){
   if(!strcmp(k,"fullscreen")) g_want_fs=atoi(v);
   else if(!strcmp(k,"seconds")) g_seconds=atoi(v);
@@ -131,6 +130,8 @@ static const char* HELP=
   "  Arrows = D-Pad     W A S D = Left stick    I J K L = Right stick\n"
   "  X / Space = A    Z = B    C = X    V = Y\n"
   "  Q = L   E = R   1 = ZL   3 = ZR   Enter = +   Backspace = -\n\n"
+  "Mouse (mouse_look=1; the menu or another window frees the cursor):\n"
+  "  Move = camera   Left = ZR   Right = ZL   Middle = R   (mouse_buttons in the .ini changes them)\n\n"
   "F1 = this help   F3 = screenshot   F4 = FPS limit 60 / unlimited   F5 = diagnostic dump (trace)\n"
   "F8 = instant full-resolution screenshot (PNG in the captures folder)\n"
   "F11 / Alt+Enter = fullscreen   Esc = quit";
@@ -222,7 +223,7 @@ void backend_gl_vsync(int on){
 static volatile int g_fs_req=-1;
 void backend_set_fullscreen(int on){ g_fs_req= on!=0; }
 int backend_is_fullscreen(void){ return g_fullscreen; }
-void backend_release_keys(void){}
+void backend_release_keys(void){ kbm_release_all(); }
 
 int backend_gl_worker_current(void){
   int k=__atomic_fetch_add(&g_wnext,1,__ATOMIC_ACQ_REL); if(k>=g_nwctx) return 0; int pa[]={GLX_PBUFFER_WIDTH,4,GLX_PBUFFER_HEIGHT,4,None};
@@ -234,16 +235,63 @@ void backend_window_size(int* w, int* h){ *w=g_ww; *h=g_wh; }
 
 void video_present_rgba(const u32* px, int w, int h, int stride){ extern void gpu_gl_present_cpu(const u32*,int,int,int); gpu_gl_present_cpu(px,w,h,stride); }
 
-/* keys -> HidNpadButton bits, the same layout as on Windows */
-static u64 keymap(KeySym k){
-  switch(k){ case XK_x: case XK_space: return 1ull<<0; /* A */ case XK_z: return 1ull<<1; /* B */ case XK_c: return 1ull<<2; /* X */ case XK_v: return 1ull<<3; /* Y */
-    case XK_q: return 1ull<<6; /* L */ case XK_e: return 1ull<<7; /* R */ case XK_1: return 1ull<<8; /* ZL */ case XK_3: return 1ull<<9; /* ZR */
-    case XK_Return: case XK_KP_Enter: return 1ull<<10; /* + */ case XK_BackSpace: return 1ull<<11; /* - */
-    case XK_Left: return 1ull<<12; case XK_Up: return 1ull<<13; case XK_Right: return 1ull<<14; case XK_Down: return 1ull<<15;
-    /* stick keys, turned into axes later */
-    case XK_a: return 1ull<<40; case XK_w: return 1ull<<41; case XK_d: return 1ull<<42; case XK_s: return 1ull<<43;
-    case XK_j: return 1ull<<44; case XK_i: return 1ull<<45; case XK_l: return 1ull<<46; case XK_k: return 1ull<<47; }
-  return 0; }
+/* keysyms (unshifted) -> input_kbm.c key codes, which its table maps to the controller as on Windows */
+static int kbm_from_keysym(KeySym k){
+  if(k>=XK_a && k<=XK_z) return 'A'+(int)(k-XK_a);
+  if(k>=XK_0 && k<=XK_9) return '0'+(int)(k-XK_0);
+  switch(k){
+    case XK_space: return KBM_KEY_SPACE;
+    case XK_Return: case XK_KP_Enter: return KBM_KEY_ENTER;
+    case XK_BackSpace: return KBM_KEY_BACKSPACE;
+    case XK_Left: return KBM_KEY_LEFT;
+    case XK_Up: return KBM_KEY_UP;
+    case XK_Right: return KBM_KEY_RIGHT;
+    case XK_Down: return KBM_KEY_DOWN;
+  }
+  return KBM_KEY_NONE; }
+
+/* X11 buttons 1 left, 2 middle, 3 right, 8 back, 9 forward (4..7 are the wheel) -> input_kbm.c buttons */
+static int kbm_from_xbutton(unsigned b){
+  switch(b){
+    case 1: return KBM_MOUSE_LEFT;
+    case 2: return KBM_MOUSE_MIDDLE;
+    case 3: return KBM_MOUSE_RIGHT;
+    case 8: return KBM_MOUSE_BACK;
+    case 9: return KBM_MOUSE_FORWARD;
+  }
+  return -1; }
+
+/* Mouse look: while the game has the mouse (the window focused, the in-game menu closed) the pointer is grabbed and
+   hidden, and the movement is each motion event's distance from the one before. Once the pointer strays a quarter of
+   the window from the centre it is warped back there. Motion events already queued before a warp still carry
+   positions from before it, so the previous position only jumps to the centre when the warp's own event (at the
+   centre) arrives. XWayland turns the hidden pointer's warps into a pointer lock with relative motion. */
+static int g_last_x, g_last_y, g_warping;
+static void mouse_warp_centre(void){
+  g_warping=1; XWarpPointer(dpy,None,win,0,0,0,0,g_ww/2,g_wh/2); XFlush(dpy); }
+static void mouse_grab_sync(void){
+  static u64 retry;
+  int want= kbm_mouse_look_enabled() && g_focused && !ov_is_open();
+  if(want && !g_grabbed){
+    u64 now=plat_ns(); if(now-retry<250000000ull) return;   /* a refused grab is tried again 4 times a second */
+    retry=now;
+    if(XGrabPointer(dpy,win,True,ButtonPressMask|ButtonReleaseMask|PointerMotionMask,GrabModeAsync,GrabModeAsync,win,g_blank,CurrentTime)!=GrabSuccess) return;
+    g_grabbed=1;
+    Window root, child; int rx, ry, x, y; unsigned mask;
+    if(!XQueryPointer(dpy,win,&root,&child,&rx,&ry,&x,&y,&mask)){ x=g_ww/2; y=g_wh/2; }
+    g_last_x=x; g_last_y=y; g_warping=0;
+    if(x!=g_ww/2 || y!=g_wh/2) mouse_warp_centre();   /* a warp onto the pointer's own position sends no event */
+  } else if(!want && g_grabbed){
+    XUngrabPointer(dpy,CurrentTime); XFlush(dpy); g_grabbed=0; }
+}
+extern void ov_input_mouse(float x, float y);
+static void mouse_motion(int x, int y){
+  if(!g_grabbed){ ov_input_mouse((float)x,(float)y); return; }
+  int cx=g_ww/2, cy=g_wh/2;
+  if(g_warping && x==cx && y==cy){ g_warping=0; g_last_x=x; g_last_y=y; return; }   /* the warp itself, not movement */
+  kbm_mouse_motion(x-g_last_x,y-g_last_y);
+  g_last_x=x; g_last_y=y;
+  if(!g_warping && (abs(x-cx)>g_ww/4 || abs(y-cy)>g_wh/4)) mouse_warp_centre(); }
 
 /* one-shot keys act on the first press only, not on auto-repeat */
 static int key_once(KeySym k, int down){
@@ -284,9 +332,7 @@ static void key_down(XKeyEvent* e){
     case XK_F4: if(once){ g_opt_fps= g_opt_fps==0? 1 : 0; char t[300]; snprintf(t,sizeof t,"%s  |  FPS limit: %s",g_title,g_opt_fps==0? "unlimited" : "60"); set_title(t);
         extern void ini_set(const char*, const char*); char v[8]; snprintf(v,sizeof v,"%d",g_opt_fps); ini_set("fps_limit",v); } return;
   }
-  keys_held|=keymap(k); }
-
-static i32 axis(u64 b, int neg, int pos){ return ((b>>pos)&1? 32767:0) - ((b>>neg)&1? 32767:0); }
+  kbm_key(kbm_from_keysym(k),1); }
 
 /* Test-only frame-indexed replay, as backend_win32.c has it (the same route files run on both): SWR_TEST_SCRIPT CSV
    guest_frame,hex_buttons,lx,ly,rx,ry, held until the next row; SWR_TEST_SETENV=FRAME:NAME=VALUE; captures at
@@ -326,15 +372,19 @@ void video_poll(void){
   cursor_sync();
   while(XPending(dpy)){ XEvent e; XNextEvent(dpy,&e);
     if(e.type==KeyPress) key_down(&e.xkey);
-    else if(e.type==KeyRelease){ KeySym k=XLookupKeysym(&e.xkey,0); key_once(k,0); keys_held&=~keymap(k); if(ov_is_open()) ov_input_key(ovk_from_keysym(k),0); }
-    else if(e.type==MotionNotify){ ov_input_mouse((float)e.xmotion.x,(float)e.xmotion.y); }
-    else if(e.type==ButtonPress || e.type==ButtonRelease){ unsigned bt=e.xbutton.button; ov_input_mouse((float)e.xbutton.x,(float)e.xbutton.y);
-      if(bt==1 || bt==3) ov_input_button(bt==1? 0 : 1, e.type==ButtonPress); else if(e.type==ButtonPress && (bt==4 || bt==5)) ov_input_wheel(bt==4? 1.0f : -1.0f); }
-    else if(e.type==FocusOut) keys_held=0;
+    else if(e.type==KeyRelease){ KeySym k=XLookupKeysym(&e.xkey,0); key_once(k,0); kbm_key(kbm_from_keysym(k),0); if(ov_is_open()) ov_input_key(ovk_from_keysym(k),0); }
+    else if(e.type==MotionNotify) mouse_motion(e.xmotion.x,e.xmotion.y);
+    else if(e.type==ButtonPress || e.type==ButtonRelease){ unsigned bt=e.xbutton.button; int down= e.type==ButtonPress;
+      kbm_mouse_button(kbm_from_xbutton(bt),down);   /* the game ignores it while the menu is open (kbm_mouse) */
+      if(!g_grabbed) ov_input_mouse((float)e.xbutton.x,(float)e.xbutton.y);
+      if(bt==1 || bt==3) ov_input_button(bt==1? 0 : 1, down); else if(down && (bt==4 || bt==5)) ov_input_wheel(bt==4? 1.0f : -1.0f); }
+    else if(e.type==FocusIn) g_focused=1;
+    else if(e.type==FocusOut){ g_focused=0; kbm_release_all(); }
     else if(e.type==ConfigureNotify){ g_ww=e.xconfigure.width>0? e.xconfigure.width : 1; g_wh=e.xconfigure.height>0? e.xconfigure.height : 1; }
     else if(e.type==ClientMessage && (Atom)e.xclient.data.l[0]==wm_delete){ LOG("window: closed by the user\n"); g_quit=1; } }
-  u64 k=keys_held, b=0;
-  i32 lx=axis(k,40,42), ly=axis(k,43,41), rx=axis(k,44,46), ry=axis(k,47,45);
+  mouse_grab_sync();
+  u64 k=0, b=0; i32 lx, ly, rx, ry;
+  kbm_keyboard(&k,&lx,&ly,&rx,&ry);
   pad_poll(&b,&lx,&ly,&rx,&ry);
   u64 phys=b; i32 plx=lx, ply=ly; b&=~(1ull<<30);
   b=swr_pad_remap(b)|(k&0xFFFFull);
@@ -345,6 +395,7 @@ void video_poll(void){
   u64 el=(plat_ns()-g_start)/1000000ull;
   if(g_press && el>=g_press_at && el<g_press_at+g_press_len) b|=g_press;
   if(g_script[0]){ const char* p=g_script; while(*p){ u64 t=strtoull(p,(char**)&p,10); if(*p!=':') break; p++; u64 m=strtoull(p,(char**)&p,16); if(el>=t && el<t+g_press_len) b|=m; if(*p==',') p++; } }
+  kbm_mouse(&b,&rx,&ry,!ov_is_open());   /* the menu uses the mouse itself while open */
   test_input_apply(&b,&lx,&ly,&rx,&ry);
   /* every session's input goes to input_record.csv (the SWR_TEST_SCRIPT replay format, a row per change), so a
      problem spot can be reached again by replaying the route there. SWR_NO_INPUT_RECORD=1: off */

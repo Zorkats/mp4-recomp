@@ -33,6 +33,7 @@ extern Paths P;
 bool file_exists(const std::string& p);
 bool dir_exists(const std::string& p);
 long long file_size(const std::string& p);
+double disk_free_gb(const std::string& dir);   // free space for this user on dir's drive, -1 if unknown
 bool make_dirs(const std::string& p);
 std::string read_text(const std::string& p);
 bool write_text(const std::string& p, const std::string& s);

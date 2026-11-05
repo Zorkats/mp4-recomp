@@ -78,6 +78,16 @@ static std::string get(const char* k) { const Opt* o = find_option(k); return g_
 static void set(const char* k, const std::string& v) { const Opt* o = find_option(k); g_ini.set(o ? o->section : "Launcher", k, v); g_ini_dirty = true; }
 static bool getb(const char* k) { return get(k) == "1"; }
 
+// ---------------------------------------------------------------- launcher theme
+static std::string g_theme_key, g_theme_note;   // the theme in use; why it fell back, when it did
+static std::string theme_path() { return join(P.exedir, "theme.ini"); }
+static void theme_sync(bool force = false) {
+    g_reduce_motion = getb("reduce_motion");
+    std::string k = get("theme");
+    if (!force && k == g_theme_key) return;
+    g_theme_key = k; theme_apply(k, theme_path(), &g_theme_note);
+}
+
 static bool draw_opt(const char* key, const char* tag = nullptr) {
     const Opt* o = find_option(key); if (!o) return false;
     std::string cur = get(key); bool ch = false;
@@ -214,6 +224,11 @@ static std::string hw_line() {
 }
 
 // ---------------------------------------------------------------- setup screens
+#ifdef _WIN32
+#define KEYS_DIR "%USERPROFILE%\\.switch"
+#else
+#define KEYS_DIR "~/.switch"
+#endif
 static std::string g_base, g_update;
 static void setup_screen(ImVec2 a, ImVec2 b) {
     ImGui::SetNextWindowPos(a); ImGui::SetNextWindowSize({b.x - a.x, b.y - a.y});
@@ -227,6 +242,15 @@ static void setup_screen(ImVec2 a, ImVec2 b) {
         page_title("FIRST-TIME SETUP", "This turns your own copy of Metroid Prime 4 Beyond (Switch build RS15) into a native PC game. "
                    "Nothing from Nintendo is included: you provide the game files, and they are compiled on this PC with the bundled GCC. "
                    "It takes a few minutes and needs about 30 GB of free space here.");
+        {   // what "here" has free, checked every few seconds (the player may be clearing space)
+            static double free_gb = -1, checked = -10; double now = ImGui::GetTime();
+            if (now - checked > 5) { free_gb = disk_free_gb(P.exedir); checked = now; }
+            if (free_gb >= 0) {
+                bool low = free_gb < 32;
+                row_text("Free space on this drive", fmt("%.0f GB   (setup needs about 30 GB)", free_gb).c_str(), low ? C_WARN : C_OK);
+                if (low) help_text("Not enough room yet: free some space on this drive, or move the game folder to a bigger drive, before you start.");
+            }
+        }
         section("YOUR GAME FILES");
         // each one a .xci / .nsp file (unpacked with your prod.keys by setup) or an extracted folder
         auto shown = [](const std::string& v, bool file, const char* none) { if (v.empty() || file_exists(v) != file) return std::string(none);
@@ -241,7 +265,7 @@ static void setup_screen(ImVec2 a, ImVec2 b) {
         if (row_button("##base", "...or an extracted game folder (exefs and romfs)", shown(g_base, false, "CHOOSE").c_str())) {
             std::string p = pick_folder(g_hwnd, "Choose your extracted Metroid Prime 4 Beyond folder"); if (!p.empty()) { g_base = p; set("setup_base", p); } }
         help_text("Dump the game from your own Switch: the cartridge as .xci or the eShop version as .nsp (DBI, nxdumptool). Files are decrypted with the keys "
-                  "of your own Switch (prod.keys from Lockpick_RCM, in ~/.switch or where Ryujinx or yuzu keep them). Or extract the game with its update "
+                  "of your own Switch (prod.keys from Lockpick_RCM, in " KEYS_DIR " or where Ryujinx or yuzu keep them). Or extract the game with its update "
                   "applied and choose the folder: it can hold exefs and romfs folders, or the files directly (main, main.npdm, Worlds, UI, Kernel.pak ...).");
         if (row_button("##updf", "Update file (.nsp)", shown(g_update, true, "OPTIONAL").c_str())) {
             std::string p = pick_file(g_hwnd, "Choose the update file (.nsp)", L"Switch update", spec); g_update = p; set("setup_update", p); }
@@ -466,6 +490,21 @@ static void page_display() {
     bool fs = getb("fullscreen");
     if (draw_opt("fullscreen")) backend_fe_fullscreen(getb("fullscreen") ? 1 : 0); (void)fs;
     section("LANGUAGE"); draw_opt("language");
+    section("LAUNCHER LOOK"); draw_opt("theme");
+    if (get("theme") == "custom") {
+        if (row_button("##thedit", "Edit the custom theme", "OPEN")) {
+            if (!file_exists(theme_path())) write_text(theme_path(), theme_template());
+            open_in_notepad(theme_path());
+        }
+        if (row_button("##threload", "Load theme.ini again after saving it", "RELOAD")) { theme_sync(true); flash(g_theme_note.empty() ? "Theme loaded" : g_theme_note); }
+        // white text sits on the accent; the body text on the background
+        float ca = contrast(IM_COL32(255, 255, 255, 255), C_RED), cb = contrast(C_TEXT, C_BG0);
+        row_text("Contrast: text on the accent", fmt("%.1f:1", ca).c_str(), ca >= 4.5f ? C_OK : C_WARN);
+        row_text("Contrast: text on the background", fmt("%.1f:1", cb).c_str(), cb >= 4.5f ? C_OK : C_WARN);
+        if (ca < 4.5f || cb < 4.5f) help_text("Below 4.5:1 text is hard to read: darken the accent or the background, or brighten the text.");
+    }
+    if (!g_theme_note.empty()) help_text(g_theme_note.c_str());
+    draw_opt("reduce_motion");
 }
 
 static void page_graphics() {
@@ -515,13 +554,14 @@ static void page_controls() {
         std::string f = pick_file(g_hwnd, "Choose SDL2.dll", L"SDL2", L"SDL2.dll");
         if (!f.empty()) { if (CopyFileW(wide(f).c_str(), wide(join(P.exedir, "SDL2.dll")).c_str(), FALSE)) flash("SDL2.dll installed: restart the launcher to use it"); else flash("Copy failed"); }
     }
-    section("MOUSE"); draw_opt("mouse_aim"); if (getb("mouse_aim")) draw_opt("mouse_sensitivity");
-#else   // controllers come from the system's SDL2 (backend_x11.c); the game mouse is Windows-only
+#else   // controllers come from the system's SDL2 (backend_x11.c)
     page_title("CONTROLS", "Pair Bluetooth controllers in your desktop's settings first. With SDL2 the game supports Switch Pro, Joy-Con, DualShock 4, "
                "DualSense, 8BitDo, Xbox and Steam Deck controls over USB or Bluetooth.");
     section("CONTROLLER SUPPORT");
     row_text("SDL2", pads_sdl_loaded() ? "Found on this system" : "Not found: install SDL2 (libSDL2-2.0.so.0) for controllers", pads_sdl_loaded() ? C_OK : C_WARN);
 #endif
+    section("MOUSE"); draw_opt("mouse_look");
+    if (getb("mouse_look")) { draw_opt("mouse_sensitivity"); draw_opt("mouse_invert_y"); draw_opt("mouse_deadzone"); }
     section("BUTTON ICONS");
     draw_opt("button_icons");
     for (int i = 0; i < 3; i++) {
@@ -557,7 +597,7 @@ static void page_controls() {
           dl->AddText({b0.x + S(2), q.y + h - S(30)}, C_DIM, i ? "ZR" : "ZL"); }
       PromptStyle st = prompt_resolve(g_prompts, s.name.c_str()); float x = q.x + S(450), y = q.y + S(36);
       for (int b : {0, 1, 2, 3, 6, 7, 4, 5, 10, 11, 12, 13, 14, 15}) { bool on = (s.phys >> b) & 1;
-          if (on) dl->AddCircleFilled({x, y}, S(19), IM_COL32(226, 30, 44, 120));
+          if (on) dl->AddCircleFilled({x, y}, S(19), alpha(C_RED, 120));
           draw_prompt(dl, {x, y}, S(15), b, st); x += S(50); if (x > q.x + w - S(40)) { x = q.x + S(450); y += S(50); } }
       if (s.phys >> 30 & 1) dl->AddText({q.x + S(450), q.y + h - S(30)}, C_CYAN, "HOME / GUIDE pressed");
     }
@@ -696,15 +736,15 @@ static void sidebar(ImVec2 a, ImVec2 b) {
     ImGui::SetNextWindowPos(a); ImGui::SetNextWindowSize({b.x - a.x, b.y - a.y});
     ImGui::Begin("##side", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(a, b, IM_COL32(3, 6, 12, 200)); dl->AddLine({b.x - 1, a.y}, {b.x - 1, b.y}, C_LINE);
+    dl->AddRectFilled(a, b, alpha(C_BG0, 200)); dl->AddLine({b.x - 1, a.y}, {b.x - 1, b.y}, C_LINE);
     logo(dl, {a.x + S(30), a.y + S(36)}, S(30), false);
     float y = a.y + S(160);
     for (int p = PG_PLAY; p < PG_COUNT; p++) {
         ImVec2 r0(a.x, y), r1(b.x, y + S(52));
         ImGui::SetCursorScreenPos(r0); bool c = ImGui::InvisibleButton(fmt("##nav%d", p).c_str(), {b.x - a.x, S(52)}); bool h = ImGui::IsItemHovered();
         bool sel = g_page == p;
-        if (sel) { dl->AddRectFilledMultiColor(r0, r1, IM_COL32(226, 30, 44, 70), IM_COL32(226, 30, 44, 0), IM_COL32(226, 30, 44, 0), IM_COL32(226, 30, 44, 70)); dl->AddRectFilled(r0, {r0.x + S(5), r1.y}, C_RED); }
-        else if (h) dl->AddRectFilled(r0, r1, IM_COL32(64, 214, 255, 18));
+        if (sel) { dl->AddRectFilledMultiColor(r0, r1, alpha(C_RED, 70), alpha(C_RED, 0), alpha(C_RED, 0), alpha(C_RED, 70)); dl->AddRectFilled(r0, {r0.x + S(5), r1.y}, C_RED); }
+        else if (h) dl->AddRectFilled(r0, r1, alpha(C_CYAN, 18));
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * 0.95f, {a.x + S(34), y + S(14)}, sel ? IM_COL32(255, 255, 255, 255) : C_DIM, PAGE_NAMES[p]);
         if (c) go((Page)p);
         y += S(54);
@@ -718,6 +758,7 @@ static void frame() {
     ImGuiIO& io = ImGui::GetIO(); float W = io.DisplaySize.x, H = io.DisplaySize.y;
     float sc = std::max(0.55f, std::min(2.2f, std::min(H / 1080.0f, W / 1700.0f)));
     if (fabsf(sc - g_scale) > 0.01f) apply_style(sc);
+    theme_sync();
     ImDrawList* bg = ImGui::GetBackgroundDrawList(); background(bg, {0, 0}, {W, H}, (float)ImGui::GetTime(), false);
     if (g_page == PG_SETUP) { if (g_page_changed) { g_focus_first = true; g_page_changed = false; } setup_screen({0, 0}, {W, H - S(70)}); }
     else {
@@ -740,7 +781,7 @@ static void frame() {
     // footer: prompts and messages
     ImGui::SetNextWindowPos({0, H - S(70)}); ImGui::SetNextWindowSize({W, S(70)});
     ImGui::Begin("##foot", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing);
-    ImDrawList* dl = ImGui::GetWindowDrawList(); dl->AddRectFilled({0, H - S(70)}, {W, H}, IM_COL32(2, 4, 9, 230)); dl->AddLine({0, H - S(70)}, {W, H - S(70)}, C_LINE);
+    ImDrawList* dl = ImGui::GetWindowDrawList(); dl->AddRectFilled({0, H - S(70)}, {W, H}, alpha(C_BG0, 230)); dl->AddLine({0, H - S(70)}, {W, H - S(70)}, C_LINE);
     float x = S(30);
     if (g_nav.any_pad && g_nav.enabled) {
         PromptStyle st = prompt_resolve(g_prompts, g_pad.name.c_str());

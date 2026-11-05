@@ -29,6 +29,7 @@
 extern "C" {
 void settings_queue(const char* k, const char* v);
 const char* settings_get(const char* k, const char* def);
+extern char g_exedir[1024];   // main.c: the game folder, with its trailing separator
 void backend_window_size(int* w, int* h);
 void* backend_gl_proc(const char* n);
 void gpu_gl_state_dirty(void);
@@ -106,7 +107,7 @@ void opt_row(const char* key) {
         float v = (float)atof(cur.c_str());
         std::string t = o->type == OPT_INT ? fmt("%d", (int)lroundf(v)) : fmt("%.2f", v);
         if (!strcmp(key, "resolution")) { bool d = val("docked") == "1"; t = res_text(v, d, ""); }
-        if (!strcmp(key, "mouse_sensitivity")) t = fmt("%d%%", (int)lroundf(v));
+        if (!strcmp(key, "mouse_sensitivity") || !strcmp(key, "mouse_deadzone")) t = fmt("%d%%", (int)lroundf(v));
         if (!strcmp(key, "volume") || !strcmp(key, "rumble")) t = (int)v == 0 ? "Off" : fmt("%d%%", (int)lroundf(v));
         if (!strcmp(key, "stick_deadzone")) t = fmt("%d%%", (int)(v * 100 / 32767));
         if (row_slider(id.c_str(), o->label, &v, o->lo, o->hi, o->step, t.c_str(), tag)) commit(o->type == OPT_INT ? fmt("%d", (int)lroundf(v)) : fmt("%g", roundf(v * 100) / 100));
@@ -135,7 +136,7 @@ void tab_content(int t) {
         help_text("Cheats that change game data work; cheats that patch game code (ARM instructions) do nothing, the code is recompiled.");
         break; }
     case 4: section("OUTPUT"); opt_row("volume"); section("COMPATIBILITY"); opt_row("audio_surround_downmix"); break;
-    case 5: section("MOUSE"); opt_row("mouse_aim"); opt_row("mouse_sensitivity");
+    case 5: section("MOUSE"); opt_row("mouse_look"); opt_row("mouse_sensitivity"); opt_row("mouse_invert_y"); opt_row("mouse_deadzone");
             section("CONTROLLER"); opt_row("button_icons"); opt_row("stick_deadzone"); opt_row("rumble"); opt_row("menu_shortcut"); opt_row("controller_api");
             help_text("Button mapping and menu buttons are on the Play screen's Controls page."); break;
     default: {
@@ -166,7 +167,7 @@ void draw_menu(float W, float H, double t) {
         ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(S(19), FLT_MAX, 0, TABS[i]); ImVec2 a(tx, p.y + S(6)), b(tx + ts.x + S(28), p.y + S(40));
         ImGui::SetCursorScreenPos(a); if (ImGui::InvisibleButton(fmt("##tab%d", i).c_str(), {b.x - a.x, b.y - a.y}, ImGuiButtonFlags_None)) { g_tab = i; g_tab_changed = true; }
         bool sel = g_tab == i;
-        if (sel) chamfer_rect(dl, a, b, S(6), IM_COL32(226, 30, 44, 200), 0); else if (ImGui::IsItemHovered()) chamfer_rect(dl, a, b, S(6), IM_COL32(64, 214, 255, 30), 0);
+        if (sel) chamfer_rect(dl, a, b, S(6), alpha(C_RED, 200), 0); else if (ImGui::IsItemHovered()) chamfer_rect(dl, a, b, S(6), alpha(C_CYAN, 30), 0);
         dl->AddText(ImGui::GetFont(), S(19), {a.x + S(14), a.y + S(7)}, sel ? IM_COL32(255, 255, 255, 255) : C_DIM, TABS[i]);
         tx = b.x + S(6);
     }
@@ -311,15 +312,19 @@ extern "C" void ov_gl_frame(void) {
         if (open && !g_ready) {}   // first open below
         if (open && g_vals.empty()) g_vals = g_q.vals;
     }
-    static bool was_open;
+    static bool was_open, need_theme;
     if (!open) { if (was_open) { was_open = false; g_vals.clear(); g_rev.active = false; g_quit_confirm = false; } return; }
-    if (!was_open) { was_open = true; g_t_open = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0; g_tab_changed = true; { Lock k; g_vals = g_q.vals; } }
+    if (!was_open) { was_open = true; need_theme = true; g_t_open = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0; g_tab_changed = true; { Lock k; g_vals = g_q.vals; } }
     if (!g_ready) {
         IMGUI_CHECKVERSION(); ImGui::CreateContext(); ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr; io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad; io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
         load_fonts(io); apply_style(1.0f);
         if (!ImGui_ImplOpenGL3_Init(nullptr)) { ImGui::DestroyContext(); Lock k; g_q.open = false; return; }
         g_ready = true; g_t_open = ImGui::GetTime();
+    }
+    if (need_theme) {   // the launcher's theme, read each time the menu opens (theme.ini may have changed)
+        need_theme = false;
+        theme_apply(g_vals["theme"], std::string(g_exedir) + "theme.ini", nullptr); g_reduce_motion = g_vals["reduce_motion"] == "1";
     }
     ImGuiIO& io = ImGui::GetIO();
     int w = 1, h = 1; backend_window_size(&w, &h);

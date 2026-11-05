@@ -39,6 +39,8 @@ GCC, a Play / settings screen, and an in-game menu (F1 or the Home / Guide butto
 | **Cheats** in the Atmosphere / dmnt format (the `.txt` files Atmosphere, Ryujinx and Yuzu use), on/off per cheat in the in-game menu, reloaded when the file changes | `runtime/cheats.c`, menu: **Cheats** page | built and unit-tested (`bash linux/cheats_test.sh`) |
 | **FOV slider** (percent of the game's own FOV, live) | `runtime/cheats.c` FOV hook, `beyond/fov_hooks.txt` | mechanism built and tested; the camera address for Prime 4 still has to be found |
 | **AMD FidelityFX FSR 1** upscaling (EASU + RCAS) with a sharpness slider | `runtime/gpu_gl.c`, `third_party/fsr1` (MIT) | works: runs in game on radeonsi; on a fixed test picture EASU + RCAS give smooth edges where bilinear shows steps (mean gradient 10.1 bilinear, 11.3 FSR) |
+| **Mouse and keyboard** on Linux and Windows: one shared layer, mouse look on the right stick, mouse buttons mapped to controller buttons, the cursor locked while playing | `runtime/input_kbm.c`, `runtime/backend_win32.c`, `runtime/backend_x11.c`, menu: **Controls** | built and unit-tested (`bash linux/input_kbm_test.sh`); not yet tried in the game |
+| **Windows build** from the source tree with MSYS2 or winlibs GCC (`build.bat`), and setup from the repository (`SWR_RECOMPILER`, `CC`) | `build.bat`, `work-profiler/*.py`, `runtime/beyond_ui/fe_sys.cpp`, `beyond/beyond_setup.py` | builds, setup screen starts; the game not yet played on Windows |
 | Project naming: Metroid Prime 4 Recomp, `~/.local/share/MetroidPrime4Recomp`, `MP4_RECOMP_HOME` (an older `MetroidBeyondRecomp` install is moved on first start) | everywhere | done |
 
 ### Cheats
@@ -192,7 +194,43 @@ from source into the runtime instead (static, no system library needed); it has 
 
 ### Windows
 
-The Windows build (`build.bat`) is renamed for this project, but has not been built or tested in this fork.
+`build.bat` builds `bin\runtime_win64_win32.exe` (Dear ImGui, the ScarletNX Vulkan renderer without DLSS, then the
+runtime with `SWR_RELEASE=1`). It takes the first toolchain it finds:
+
+| tool | looked for in this order |
+|---|---|
+| GCC | `gcc\Library\bin` (winlibs GCC 14.2.0, what releases ship), `SWR_GCC_BIN`, `gcc.exe` on `PATH` |
+| Python | `python\python.exe`, `py -3`, `python` on `PATH` |
+| glslang | `GLSLANG`, `glslang.exe` on `PATH`, `%VULKAN_SDK%\Bin\glslang.exe` |
+
+The GCC it picks goes first on `PATH` and into `SWR_GCC_BIN`, so `work-profiler\build_imgui.py`,
+`work-profiler\build_snxvk2.py` and `switchrecomp.py --cc gcc` all use the same compiler. `build.bat release X.Y.Z`
+refuses to pack a release without the pinned `gcc\` and `python\`, because both are copied into it for the player's setup.
+
+Checked in this fork: a clean `build.bat` with MSYS2 UCRT64 GCC 16.2, Python 3.13 and glslang 15.2 links an EXE that
+imports only Windows system DLLs. It opens the first-time setup screen, and `--nx-extract` finds `prod.keys` in Ryujinx's
+folder and rejects a file that isn't an `.xci` / `.nsp`. Not checked yet: setting up and playing the real game on Windows,
+and `build.bat release`.
+
+Setup from the source tree, without a release's `recompiler\` folder:
+
+- `SWR_RECOMPILER=<repository>`: the front end runs `beyond\beyond_setup.py` from there (as the AppImage does on Linux).
+- `CC=<path to gcc.exe>`: the GCC for the game code. The release's bundled GCC still wins when it is there. A `gcc` that
+  is merely on `PATH` is never used, so a player's unrelated compiler can't change the build.
+- `SWR_PYTHON=<path to python.exe>`: the Python, when `python.exe` on `PATH` isn't the right one.
+
+### Keyboard and mouse
+
+`runtime/input_kbm.c` maps the keyboard and mouse to the controller for both desktop backends. `backend_win32.c` (raw
+input, `ClipCursor`, a hidden cursor) and `backend_x11.c` (`XGrabPointer` with a blank cursor, warped back to the centre
+when it strays) only translate their events into its key codes and mouse deltas. Mouse movement over one 60 Hz poll
+becomes right-stick deflection: `mouse_deadzone` percent for the smallest movement, a full push at 40 counts at 100 %
+`mouse_sensitivity`. The keyboard table is unchanged from upstream. `bash linux/input_kbm_test.sh` tests the mapping on
+its own (it also builds on Windows: `gcc -I runtime linux/input_kbm_test.c runtime/input_kbm.c`).
+
+Settings (`[Input]`): `mouse_look` (was `mouse_aim`, still read), `mouse_sensitivity` (10 to 1000), `mouse_invert_y`,
+`mouse_deadzone` (0 to 50) and `mouse_buttons` (left, right, middle, back, forward; default `zr,zl,r,-,-`). An `.ini`
+that still has the old default `y,l,r,-,-` is moved to the new one on start.
 
 ## Credits
 

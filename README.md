@@ -109,7 +109,25 @@ downloaded to a PC.
 ## Controls and the in-game menu
 
 - Controllers work through SDL2 (tested with an Xbox Series X controller; **ZL is the left trigger**).
-- Keyboard: WASD to move, **1** = ZL, **3** = ZR.
+- **Mouse and keyboard** work together with a controller, on Linux and Windows:
+
+  | Action | Key or button |
+  |---|---|
+  | Move (left stick) | **W A S D** |
+  | Camera (right stick) | **the mouse**, or **I J K L** |
+  | Shoot (ZR) | **left click**, or **3** |
+  | Lock on (ZL) | **right click**, or **1** |
+  | Missile (R) | **middle click**, or **E** |
+  | A / B / X / Y | **X** or **Space** / **Z** / **C** / **V** |
+  | L | **Q** |
+  | + / - | **Enter** / **Backspace** |
+  | D-pad | **arrow keys** |
+
+  While you play, the cursor is hidden and kept in the window. Opening the in-game menu (F1) or switching to another
+  window frees it. The menu's **CONTROLS** page has the mouse settings: mouse look on or off, sensitivity, invert up and
+  down, and the starting push (how far the stick is pushed by the smallest mouse movement, past the game's dead zone).
+  `mouse_buttons` in the `.ini` sets what the left, right, middle, back and forward buttons press (default
+  `zr,zl,r,-,-`, `-` for nothing).
 - **F1** or the Home / Guide button opens the in-game menu (settings, cheats, FOV, upscaling).
 - **F3** saves a screenshot to `captures/`, **F4** toggles the 60 fps limit, **F5** writes a frame trace for bug
   reports, **F11** toggles fullscreen.
@@ -273,6 +291,11 @@ from the same save), traced to a root cause and checked again in the game.
   machine's, which had made it need AVX-512 and glibc 2.43 ("CPU ISA level is lower than required" on a Steam Deck).
 - Cheats in Atmosphere / dmnt format, toggled per cheat in the in-game menu.
 - AMD FidelityFX FSR 1 upscaling with a sharpness slider.
+- Launcher themes (Display page, LAUNCHER LOOK): Beyond, Amber visor, High contrast, or your own `theme.ini` next to
+  the game (`accent=#RRGGBB` lines; the page shows the text contrast it gives). The in-game menu follows the theme.
+  **Reduce motion** stops the background rings and the progress-bar stripes.
+- The setup screen shows the free space on the game folder's drive beside the 30 GB it needs, and gives the Windows
+  key folder (`%USERPROFILE%\.switch`) on Windows.
 
 ### Diagnostics and testing tools
 
@@ -305,7 +328,9 @@ from the same save), traced to a root cause and checked again in the game.
 - **The FOV slider** has no effect yet (the camera address for this build hasn't been found).
 - **Not modelled yet:** a filter effect on two audio submixes and an aux effect, so a few sounds may be clearer than
   intended.
-- **Windows** is inherited from the upstream project and untested.
+- **Windows** builds from source (`build.bat`, see [Building from source](#building-from-source)) and its setup and
+  Play screens start, but the game itself has not been played on Windows in this fork yet, and there is no Windows
+  release download yet.
 - The rainbow screen after opening a door is believed fixed (see above) but wasn't reproduced directly.
 
 ## Troubleshooting
@@ -352,6 +377,38 @@ bash linux/make_appimage.sh
 UTC build time, its SHA-256 and the ID of the recompiler it brings); `bash linux/publish_release.sh [TAG]` uploads both
 to the latest release (or TAG), which is what the launcher's updater reads. To run from the source tree without
 the AppImage instead: `bash linux/setup_game.sh GAME_FOLDER [UPDATE_FOLDER]`, then `bash linux/run.sh`.
+
+### Windows
+
+You need a 64-bit GCC (MinGW-w64), Python 3 and glslang:
+
+- **GCC:** [MSYS2](https://www.msys2.org) with its UCRT64 compiler (`pacman -S mingw-w64-ucrt-x86_64-gcc`, then add
+  `C:\msys64\ucrt64\bin` to `PATH`), or [winlibs](https://winlibs.com) GCC 14.2.0 (UCRT, POSIX threads, x64) unpacked
+  into `gcc\` in the repository. Releases are built with the winlibs one.
+- **Python 3:** any Python 3 on `PATH` or the `py` launcher, or the Python 3.12 embeddable package in `python\`.
+- **glslang:** from the [Vulkan SDK](https://vulkan.lunarg.com) (found through `VULKAN_SDK`), on `PATH`, or named with
+  `set GLSLANG=C:\path\to\glslang.exe`.
+
+```bat
+build.bat
+```
+
+This builds `bin\runtime_win64_win32.exe`. To set the game up from the source tree, copy it next to where the game
+should live as `Metroid Prime 4 Beyond.exe`, then start it with the recompiler pointed at the repository and a GCC for
+the game code:
+
+```bat
+set SWR_RECOMPILER=C:\path\to\mp4-recomp
+set CC=C:\msys64\ucrt64\bin\gcc.exe
+"Metroid Prime 4 Beyond.exe"
+```
+
+The setup screen then works as on Linux: choose your `.xci` / `.nsp` and the update `.nsp` (with `prod.keys` in
+`%USERPROFILE%\.switch` or where Ryujinx or yuzu keep it), or extracted folders. `SWR_PYTHON` names the Python to use
+when `python.exe` on `PATH` isn't the one you want.
+
+`build.bat release X.Y.Z` also packs a release folder in `release\`. It needs the pinned toolchain in `gcc\` and
+`python\` (both go into the release, so players need nothing installed) and `redist\zlib1.dll` and `redist\SDL2.dll`.
 
 ## Credits
 

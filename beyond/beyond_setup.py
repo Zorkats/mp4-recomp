@@ -493,10 +493,16 @@ def main():
         P(31, 'Compiling with GCC', '0 of %d files' % len(files))
 
         if WIN:
-            cc = os.path.join(HERE, 'gcc', 'Library', 'bin', 'gcc.exe')   # always the bundled one, never a gcc on PATH
+            # the bundled GCC, never one that merely happens to be on PATH; a build from source names its own with $CC
+            cc = os.path.join(HERE, 'gcc', 'Library', 'bin', 'gcc.exe')
             cc = cc if os.path.isfile(cc) else None
+            if not cc and os.environ.get('CC'):
+                cc = shutil.which(os.environ['CC'])
+                if not cc:
+                    raise Fail('CC is set to %s, which was not found.' % os.environ['CC'])
             if not cc:
-                raise Fail('The bundled GCC is missing (recompiler\\gcc). Extract the release again.')
+                raise Fail('The bundled GCC is missing (recompiler\\gcc). Extract the release again '
+                           '(a build from source: set CC to a MinGW-w64 gcc.exe, for example MSYS2 UCRT64\'s).')
         else:
             # $CC, else the GCC bundled next to this script (the AppImage's recompiler/gcc), else the system's
             cc = shutil.which(os.environ['CC']) if os.environ.get('CC') else None

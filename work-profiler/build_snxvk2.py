@@ -5,7 +5,7 @@ runtime. Also builds and runs upstream's shader decoder generator (tools/shaderd
 import os, subprocess, sys, concurrent.futures as cf
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.dirname(HERE)
 V = os.path.join(ROOT, 'runtime', 'snxvk'); S = os.path.join(V, 'src_new'); NX = os.path.join(S, 'nx')
-G = os.path.join(ROOT, 'gcc', 'Library', 'bin')
+G = os.environ.get('SWR_GCC_BIN') or os.path.join(ROOT, 'gcc', 'Library', 'bin')   # SWR_GCC_BIN: set by build.bat
 NODLSS = bool(os.environ.get('SWR_NO_DLSS'))
 OUT = os.path.join(V, 'obj_new_nodlss' if NODLSS else 'obj_new'); os.makedirs(OUT, exist_ok=True)
 LIB = os.path.join(V, 'libsnxvk_new_nodlss.a' if NODLSS else 'libsnxvk_new.a')

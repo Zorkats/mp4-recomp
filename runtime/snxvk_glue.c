@@ -222,7 +222,10 @@ void snxvk_present(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt)
     u64 per= pf>=30 && pf<=240? 1000000000ull/(u64)pf : 16666667ull;   /* 30: cinematics (main.c pace_update) */
     u64 next=deadline+per; if(deadline) wait_deadline(next);
     u64 now=plat_ns(); t_w=now; deadline= deadline && (i64)(now-next)<(i64)(per/2)? next : now; }
-  { static u64 last_in; u64 t0=plat_ns(); snxv_vk_renderer.present_buffer(a,w,h,pitch,layout,bhl,fmt,crop,0); u64 t1=plat_ns();
+  /* the game's flip from QueueBuffer (svc_vi.c), as the OpenGL output applies it: Metroid Prime 4 asks for FlipV (2) on
+     every frame, and passing 0 showed it upside down */
+  extern volatile u32 g_vi_transform; u32 transform=g_vi_transform&3;
+  { static u64 last_in; u64 t0=plat_ns(); snxv_vk_renderer.present_buffer(a,w,h,pitch,layout,bhl,fmt,crop,transform); u64 t1=plat_ns();
     static int tr=-1; if(tr<0) tr=getenv("SWR_SNXVK_TRACE")!=NULL;
     if(t1-t0>250000000ull) LOG("vulkan_native: present_buffer took %.0f ms\n",(t1-t0)/1e6);
     if(tr && last_in && (t0-last_in>30000000ull || t1-t0>12000000ull)) LOG("vulkan_native: slow frame: game arrived %.1f ms after the last present, present took %.1f ms\n",(t0-last_in)/1e6,(t1-t0)/1e6);

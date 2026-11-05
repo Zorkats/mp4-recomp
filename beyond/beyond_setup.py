@@ -444,7 +444,8 @@ def main():
         import switchrecomp, nxloader, codegen   # the SwitchRecomp translator, bundled next to this script
         gen_marker = os.path.join(build, '.generated')
         gen_key = hashlib.sha1(open(os.path.join(ex_dst, 'main'), 'rb').read()[:0x100] + (open(PATCHES, 'rb').read() if os.path.isfile(PATCHES) else b'')
-                               + open(os.path.join(HERE, 'codegen.py'), 'rb').read() + open(os.path.join(HERE, 'metroid_perf.py'), 'rb').read()).hexdigest()
+                               + open(os.path.join(HERE, 'codegen.py'), 'rb').read() + open(os.path.join(HERE, 'metroid_perf.py'), 'rb').read()
+                               + open(os.path.join(HERE, 'logic_rate.py'), 'rb').read()).hexdigest()
         if os.path.isfile(gen_marker) and open(gen_marker).read().strip() == gen_key:
             log('Generated code already in place: kept')
             files = sorted(os.path.join(build, f) for f in os.listdir(build) if f.startswith('code_') and f.endswith('.c'))

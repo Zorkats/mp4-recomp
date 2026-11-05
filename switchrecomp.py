@@ -26,7 +26,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-import nxloader, codegen, metroid_perf
+import nxloader, codegen, metroid_perf, logic_rate
 
 RT = os.path.join(HERE, 'runtime')
 RUNTIME_SRC = ['plat', 'mem', 'kernel', 'ipc', 'svc_core', 'svc_hid', 'svc_fs', 'svc_vi', 'nvdrv', 'gpu', 'gpu_engines',
@@ -105,12 +105,15 @@ def gen_module(prog, mods, npdm, outdir, title, chunk_instrs, say):
     if cur: chunks.append(cur)
     files = []
     t0 = time.time()
+    prog.overrides = logic_rate.overrides(mods, prog.word)
+    if prog.overrides: say('  game logic rate: %d sites follow swr_logic_k (logic_rate.py)' % len(prog.overrides))
     for ci, ch in enumerate(chunks):
         text = '\n'.join(codegen.emit_function(prog, f, funcs) for f in ch)
         text = metroid_perf.apply(text, mods, say)
         # only prototype what this chunk references
         refs = set(re.findall(r'\bF_[0-9A-F]+\b', text))
         protos = ''.join('void %s(CPU* RESTRICT c, u64 e);\n' % r for r in sorted(refs))
+        if 'swr_logic_val(' in text: protos += logic_rate.CHUNK_DECL
         p = os.path.join(outdir, 'code_%03d.c' % ci)
         write_if_changed(p, '#include "cpu.h"\n' + ('#include <stdlib.h>\n' if 'getenv(' in text else '') + protos + text + '\n')
         files.append(p)
@@ -144,6 +147,7 @@ def gen_module(prog, mods, npdm, outdir, title, chunk_instrs, say):
     L.append('''typedef struct SwrModule { u32 abi; u32 nmods; const SwrModInfo* mods; u32 nentries; const u64* entry_addr; const GuestFn* entry_fn;
   GuestFn interp; u64 code_lo, code_hi; const char* title; u64 title_id; u32 main_stack, main_prio, main_core;
   void (*init)(const RtAPI* rt); u64 (*step)(CPU* c, u32 w, u64 pc); } SwrModule;''')
+    if prog.overrides: L.append(logic_rate.MODULE_C)
     L.append('static const RtAPI* g_rt;')
     L.append('static void mod_init(const RtAPI* rt){ g_rt=rt; }')
     L.append('static SwrModule MOD;')

@@ -367,7 +367,7 @@ static const IniOpt INI_PERF[]={
   {"audio_surround_downmix","1","1 = mix all six audio channels into the stereo output, as the console does (0 = front left/right only: no center channel, so no dialogue)"},
   {"cheats","1","1 = run the cheat codes that are on (Atmosphere format, <game>_data/cheats/<build id>.txt; turn them\n;   on and off in the in-game menu, Cheats page)"},
   {"fov","100","Field of view in percent of the game's own (60-160, applies live). Needs a FOV hook for this game\n;   build (beyond/fov_hooks.txt)"},
-  {"fps_limit","1","1 = 60 FPS (the speed of a Switch), 0 = unlimited (the game runs faster). Values under 60 are treated as 60: the game advances one step per image, so 30 meant half speed. F4 changes it in game"},
+  {"fps_limit","1","1 = 60 FPS (the speed of a Switch), otherwise the cap (60 to 240), 0 = unlimited. The game keeps real-time speed at any frame rate when its code was built with logic_rate.py; older builds run faster above 60. Values under 60 are treated as 60. F4 changes it in game"},
   {"video_async_retire","0","1 = retire obsolete video pictures on a bounded worker (experimental; restart required)"},
   {"video_avx2","1","1 = AVX2 video color conversion when the CPU has it (same result as the plain conversion, faster; restart required)"},
   {"video_block_copy","1","1 = video pictures written to tiled memory 64 bytes at a time (same result, faster; restart required)"},
@@ -527,8 +527,56 @@ void vi_convert_cpu(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt
 volatile int g_pace_fps=1;
 static void pace_update(void){ g_pace_fps=g_opt_fps; }
 
+/* Game logic at any frame rate. The game steps its logic by flt_93C5400[mode] seconds (mode 0 = 1/60, mode 1 = 1/30,
+   F_8E49AAC) once per presented frame, so above 60 fps it ran faster than real time. Code built with logic_rate.py
+   exports swr_logic_k (sixtieths per step): every site that picks a value by the mode follows it (step, times,
+   smoothing exponents, frame counts). Each frame k follows the measured frame time: exactly the cap while frames
+   arrive on time (k = 1 at 60 fps, as on the Switch), the smoothed real time while they come late, and never more
+   than 1/30 s, the game's own slowest step. SWR_LOGIC_HZ=N fixes k at 60/N (60..240), SWR_LOGIC_HZ=0 turns it off.
+   An older code DLL only gets SWR_LOGIC_HZ=N, as 1/N in the step table (smoothing then runs N/60 times faster).
+   Build 8275FBE1EC5191C2 only. */
+static float* g_logic_k; static volatile u64* g_logic_unknown; static volatile u32* g_logic_unknown_n;
+static void logic_hz_apply(void){
+  static int state; /* 0 = first frame, 1 = off or fixed, 2 = following the frame time */
+  static u32 said, snapped; static u64 last, frames, t0; static double ema, ksum, debt;
+  if(g_logic_unknown_n) for(u32 n=*g_logic_unknown_n; said<n && said<32; said++)   /* sites with no 2:1 pair, once */
+    LOG("game logic rate: site %llX keeps its 60 fps value (not a 2:1 pair)\n",(unsigned long long)g_logic_unknown[said]);
+  if(state==1) return;
+  if(state==0){ state=1;
+    static const u8 bid[8]={0x82,0x75,0xFB,0xE1,0xEC,0x51,0x91,0xC2};
+    const SwrModInfo* m=NULL;
+    if(g_mod) for(u32 i=0;i<g_mod->nmods;i++) if(!strcmp(g_mod->mods[i].name,"main")) m=&g_mod->mods[i];
+    int ours= m && m->base==0x8006000ull && !memcmp(m->build_id,bid,8);
+    const char* s=getenv("SWR_LOGIC_HZ");
+    if(s && *s){ int hz=atoi(s);
+      if(hz==0){ LOG("game logic rate: off (SWR_LOGIC_HZ=0), one 1/60 s step per frame\n"); return; }
+      if(hz<60 || hz>240){ WARN("SWR_LOGIC_HZ=%s ignored (60..240, or 0 for off)\n",s); return; }
+      if(!ours){ WARN("SWR_LOGIC_HZ: not build 8275FBE1EC5191C2, ignored\n"); return; }
+      if(g_logic_k){ *g_logic_k=60.0f/(float)hz; LOG("game logic rate: fixed at %d steps a second (k=%g)\n",hz,*g_logic_k); return; }
+      float t[2]; memcpy(t,GP(0x93C5400ull),8);
+      if(t[0]!=1.0f/60.0f || t[1]!=1.0f/30.0f){ WARN("SWR_LOGIC_HZ: step table holds %g, %g, not 1/60, 1/30: ignored\n",t[0],t[1]); return; }
+      t[0]=1.0f/(float)hz; memcpy(GP(0x93C5400ull),t,4);
+      LOG("game logic rate: step 1/%d s; this code DLL has no swr_logic_k, so smoothing stays at 1/60\n",hz); return; }
+    if(!ours || !g_logic_k) return;   /* the step stays 1/60 s per frame */
+    LOG("game logic rate: follows the frame time\n"); state=2; last=t0=plat_ns(); return; }
+  /* the cap: fps_limit 1 = 60, N = N (60..240), 0 = none; recording keeps 60, smooth recording paces in guest time */
+  int pf=g_pace_fps; double per= pf>=60 && pf<=240? 1.0/pf : (pf==0 && !g_rec_active)? 0 : 1.0/60;
+  u64 now=plat_ns(); double dt=(now-last)*1e-9; last=now;
+  if(dt>1.0/30) dt=1.0/30;   /* a hitch: the game slows down, as it does under 30 fps on the Switch */
+  ema= ema>0? ema+(dt-ema)*0.25 : dt;
+  int on_cap= per>0 && (g_vt_on || (ema>per*0.97 && ema<per*1.03)); double step= on_cap? per : ema; snapped+=on_cap;
+  /* debt = real time the steps have not covered yet. The average lags the pacer's catch-up frames after a slow one,
+     so past 2 ms a tenth of the debt is paid back each frame; inside 2 ms the step stays exact (k = 1 at 60 fps) */
+  if(!g_vt_on){ debt+=dt; if(debt>0.002 || debt<-0.002) step+=debt*0.1; if(step<0.5*ema) step=0.5*ema; }
+  float k=(float)(step*60.0); if(k<0.1f) k=0.1f; if(k>2.0f) k=2.0f;
+  if(!g_vt_on){ debt-=k/60.0; if(debt>0.1 || debt<-0.1) debt=0; }   /* a k clamp or a long stall: start over */
+  *g_logic_k=k; ksum+=k;
+  if(++frames%600==0){ /* every 600 frames: frame rate, frames at the cap, game time against real time */
+    LOG("game logic rate: %.1f steps a second, %u of 600 at the cap, game time %.1f%% of real time\n",600.0*60.0/ksum,snapped,100.0*(ksum/60.0)/((now-t0)*1e-9));
+    ksum=0; snapped=0; t0=now; } }
+
 void vi_show_buffer(u32 nvmap_id, u32 offset, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt){
-  pace_update();
+  pace_update(); logic_hz_apply();
   static int trace_configured;static FILE*limiter_trace;static unsigned trace_rows;
   if(!trace_configured){trace_configured=1;const char*path=getenv("SWR_TRACE_LIMITER");if(path&&path[0]){limiter_trace=fopen(path,"w");if(limiter_trace)fprintf(limiter_trace,"frame,thread,enter_ns,enqueued_ns,limit_begin_ns,end_ns,requested_sleep_ms,actual_sleep_ms,deadline_ns\n");}}
   u64 trace_enter=limiter_trace?plat_ns():0,trace_enqueued=0,trace_begin=0,trace_sleep=0,trace_actual=0,trace_deadline=0;
@@ -615,6 +663,8 @@ static int load_code(void){
     if(g_code_tcc) LOG("code: %s_code.dll was compiled with TCC. It runs several times slower than with GCC: recompile with GCC (SwitchRecomp, compiler GCC) for much better performance\n",g_exename);
     else LOG("code: %s_code.dll compiled with GCC (linker %u.%u)\n",g_exename,mj,mn); }
 #endif
+  g_logic_k=(float*)plat_dl_sym(h,"swr_logic_k");   /* logic_rate.py builds only */
+  g_logic_unknown=(volatile u64*)plat_dl_sym(h,"swr_logic_unknown"); g_logic_unknown_n=(volatile u32*)plat_dl_sym(h,"swr_logic_unknown_n");
   g_mod=f(); return 0; }
 
 static void build_dispatch(void){

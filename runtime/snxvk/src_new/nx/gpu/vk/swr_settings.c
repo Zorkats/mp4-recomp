@@ -2,7 +2,19 @@
    shaderdec/ folder), set by snxvk_glue.c before the renderer starts. Paths this build stubs stay off: the macro JIT
    (no LLVM), FFmpeg video decode, and the shipped-shader pass (its loader and RomFS readers aren't ours). */
 #include "snx_settings.h"
+#include <stdio.h>
+#include <stdlib.h>
+/* SWR_VK_RENDERDOC=PREFIX and SWR_VK_RENDERDOC_FRAMES=N,Ms,...: RenderDoc captures of chosen frames (vk/renderdoc.c),
+   for debugging a scripted run; RenderDoc's folder must be on PATH. SWR_VK_SHADER_CORPUS=DIR: every shader's code
+   and key, for tools/snx_shaderc.c (gpu/shader/corpus.c) */
+static void env_text(char* to, size_t size, const char* name) {
+    const char* e = getenv(name);
+    if (e && *e) snprintf(to, size, "%s", e);
+}
 void swr_settings_set(float resolution, int shadows, int vsync, int anisotropy, int recording_thread) {
+    env_text(g_settings.render_doc_captures, sizeof g_settings.render_doc_captures, "SWR_VK_RENDERDOC");
+    env_text(g_settings.render_doc_frames, sizeof g_settings.render_doc_frames, "SWR_VK_RENDERDOC_FRAMES");
+    env_text(g_settings.shader_corpus, sizeof g_settings.shader_corpus, "SWR_VK_SHADER_CORPUS");
     g_settings.resolution_scale = resolution;
     g_settings.shadows = shadows;
     g_settings.vsync = vsync;

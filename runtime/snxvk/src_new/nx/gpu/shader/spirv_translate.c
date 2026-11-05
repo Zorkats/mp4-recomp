@@ -45,6 +45,10 @@ static void reg_write(DirectCtx* c, u32 r, u32 value) {
     if (r < 255) spv_emit_store(&c->emit, c->reg[r], value);
 }
 
+/* The generic inputs an indexed ALD (a vertex program's register-addressed attribute) chooses among, as the OpenGL
+   translator (runtime/shader.c) does; the ones without data read 0, 0, 0, 1 (vk/render.c) */
+#define ALD_INDEXED_INPUTS 16u
+
 /* How a fragment shader's generic input interpolates (the SPH's imap: 1 constant, 2 perspective, 3 screen
    linear): as its first used component, and perspective when none is marked used, as Eden reads it */
 static u32 ipa_interpolation(const u32* sph, u32 input) {
@@ -931,6 +935,7 @@ static int direct_writes_pred(u64 w, int op) {
         case O_R2P_I:
         case O_SHFL:
         case O_VOTE: return 1;
+        case O_AL2P: return B(w, 44, 3) != 7;
         case O_LOP_R:
         case O_LOP_C:
         case O_LOP_I:
@@ -986,6 +991,26 @@ static int direct_flow_targets(const u64* insn, u32 n, u32 k, u32 targets[64], u
    instructions that aren't known (CONTs, RETs). */
 static int direct_def_dominates(const u64* insn, u32 n, u32 def, u32 use) {
     u32 k;
+    /* a write in the entry block, before any flow and with nothing arriving at or before it, runs before everything
+       after it: a loop's back edge from past the use doesn't change that (Metroid Prime 4's fog volume program loads
+       its image handle first, then stores to it in a loop) */
+    int entry = 1;
+    for (k = 11; k < n && entry; k++) {
+        u32 targets[64];
+        u8 elsewhere[64];
+        int count;
+        if (!IDX_OK(k)) continue;
+        const Op* op = decode(insn[k]);
+        if (!op) return 0;
+        count = direct_flow_targets(insn, n, k, targets, elsewhere);
+        if (count < 0) return 0;
+        if (k < def && (count > 0 || op->id == O_BRA || op->id == O_BRX || op->id == O_CAL || op->id == O_RET ||
+                        op->id == O_SYNC || op->id == O_BRK || op->id == O_CONT || op->id == O_EXIT || op->id == O_KIL))
+            entry = 0;
+        for (int t = 0; t < count; t++)
+            if (targets[t] <= def) entry = 0;
+    }
+    if (entry) return 1;
     for (k = 11; k < n; k++) {
         u32 targets[64];
         u8 elsewhere[64];
@@ -1311,13 +1336,18 @@ static int supported(u64 w, int op) {
                    (sr >= 0x25 && sr <= 0x27) || sr == 0x38 || sr == 0x39 || sr == 0x3a || sr == 0x3b || sr == 0x3c ||
                    (sr >= 0x50 && sr <= 0x53);
         }
-        /* Attribute addresses use the same byte offsets as ALD/AST. The optional range predicate is not modeled. */
-        case O_AL2P: return B(w, 44, 3) == 7;
+        /* Attribute addresses use the same byte offsets as ALD/AST. The optional range predicate (bits 44-46) is
+           written as in range, as the OpenGL translator leaves it: Metroid Prime 4's fragment programs build the
+           address of the input an IPA.IDX reads this way */
+        case O_AL2P: return 1;
         /* ALD and AST: a patch's attributes (bit 31) are its tessellation levels and 30 vectors from 0x20. Which stage
            has which is stage_has's. ALD.O (bit 32) reads a control program's per-vertex outputs. */
         case O_ALD: {
             u32 addr = B(w, 20, 10), count = B(w, 47, 2) + 1;
-            if (B(w, 8, 8) != 255 || B(w, 0, 8) + count > 255) return 0;
+            if (B(w, 0, 8) + count > 255) return 0;
+            /* indexed (the register holds the address, the offset is added): a vertex program's generic inputs,
+               see the translation */
+            if (B(w, 8, 8) != 255) return !B(w, 31, 1) && !B(w, 32, 1);
             if (B(w, 31, 1)) return addr + count * 4 <= 0x200;
             return (addr >= 0x70 && addr + count * 4 <= 0x280) ||
                    ((addr == 0x60 || addr == 0x2f4 || addr == 0x2f8 || addr == 0x2fc) && count == 1) ||
@@ -1486,6 +1516,7 @@ static int supported(u64 w, int op) {
         case O_FMNMX_I: return !B(w, 47, 1);
         case O_IPA: {
             u32 addr = B(w, 30, 8) * 4;
+            if (B(w, 38, 1) && B(w, 8, 8) != 255) return 1; /* IPA.IDX: the register holds the whole address */
             return ((addr >= 0x80 && addr < 0x280) || (addr >= 0x70 && addr < 0x80) || addr == 0x60 || addr == 0x64 ||
                     addr == 0x2e0 || addr == 0x2e4 || addr == 0x3fc) &&
                    !B(w, 38, 1);
@@ -1529,8 +1560,10 @@ static int supported(u64 w, int op) {
         case O_SULD:
             return (B(w, 33, 3) == 3 && (!B(w, 52, 1) || B(w, 20, 4) == 4)) ||
                    (B(w, 33, 3) == 1 && B(w, 52, 1) && B(w, 20, 4) == 4);
-        /* stores and atomics also reach 2D array surfaces (4), the layer in the coordinates' third register */
-        case O_SUST: return !B(w, 52, 1) && (B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 1);
+        /* stores and atomics also reach 2D array surfaces (4), the layer in the coordinates' third register. Stores
+           reach 3D surfaces (5) too: Metroid Prime 4's vertex programs fill its fog volume with them */
+        case O_SUST:
+            return !B(w, 52, 1) && (B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 1 || B(w, 33, 3) == 5);
         /* 32-bit atomics other than INC and DEC, which wrap at the operand. Bindless is bit 54 here. */
         case O_SUATOM:
             return (B(w, 33, 3) == 3 || B(w, 33, 3) == 4 || B(w, 33, 3) == 1) &&
@@ -1598,7 +1631,7 @@ static int supported(u64 w, int op) {
 }
 
 /* The storage image slot for a surface operation: images of one handle share a slot when they have the same
-   dimension (3 a 2D image, 4 a 2D array, 1 a buffer) and are both R32ui (atomics, and loads from buffers) or both
+   dimension (3 a 2D image, 4 a 2D array, 5 a 3D image, 1 a buffer) and are both R32ui (atomics, and loads from buffers) or both
    not. */
 static int direct_image_slot(const ShaderInfo* info, u32 off, int bindless, u32 bank, int r32ui, int type) {
     int slot = 0;
@@ -1618,6 +1651,7 @@ static int stage_has(u64 w, int op, int stage) {
     u32 addr = B(w, 20, 10);
     if (op == O_ALD) {
         if (stage == ST_FS || stage == ST_CS) return 0;
+        if (B(w, 8, 8) != 255) return stage == ST_VS;
         if (B(w, 31, 1)) return stage == ST_TCS || stage == ST_TES;
         if (stage == ST_TCS && B(w, 32, 1) && addr < 0x70) return 0;
         if (addr == 0x2f8 || addr == 0x2fc) return stage == ST_VS;
@@ -2243,7 +2277,14 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             op->id != O_MEMBAR && op->id != O_CCTL && op->id != O_CCTLL && op->id != O_IDE && op->id != O_BPT &&
             op->id != O_PEXIT)
             used[d] = 1;
-        if (op->id == O_ALD || op->id == O_AST) {
+        if (op->id == O_AL2P && B(insn[i], 44, 3) < 7) pred_used[B(insn[i], 44, 3)] = 1;
+        if (op->id == O_ALD && a != 255) { /* indexed: any of the generic inputs (supported() and stage_has()) */
+            u32 width = B(insn[i], 47, 2) + 1;
+            used[a] = 1;
+            for (u32 k = 0; k < width; k++)
+                if (d + k < 255) used[d + k] = 1;
+            for (u32 k = 0; k < ALD_INDEXED_INPUTS; k++) inputs_used[k] = 1;
+        } else if (op->id == O_ALD || op->id == O_AST) {
             u32 addr = B(insn[i], 20, 10), width = B(insn[i], 47, 2) + 1, vertex = B(insn[i], 39, 8);
             int input = op->id == O_ALD && !(stage == ST_TCS && B(insn[i], 32, 1));
             if (op->id == O_AST && a != 255) indexed_store = 1;
@@ -2606,7 +2647,10 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (buffer && stage != ST_CS) return direct_reject(si, "buffer surface outside compute");
             /* a fragment program's 2D loads are texel fetches, as a compute program's are: render.c binds the raw
                view their slot asks for */
-            if (stage != ST_CS && stage != ST_FS) return direct_reject(si, "surface operation outside supported stage");
+            if (stage != ST_CS && stage != ST_FS && (stage != ST_VS || op->id == O_SULD))
+                return direct_reject(si, "surface operation outside supported stage");
+            /* compute writes its images back to guest memory, which takes 2D surfaces only (vk/compute.c) */
+            if (dim == 5 && stage == ST_CS) return direct_reject(si, "3D surface in compute");
             bank = 0;
             off = B(insn[i], 36, 13);
             handle = B(insn[i], 39, 8);
@@ -2615,7 +2659,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                 return direct_reject(si, "untracked surface handle");
             if (a < 255) used[a] = 1;
             if (!buffer && a + 1 < 255) used[a + 1] = 1;
-            if (dim == 4 && a + 2 < 255) used[a + 2] = 1;
+            if ((dim == 4 || dim == 5) && a + 2 < 255) used[a + 2] = 1;
             if (bindless && handle < 255) used[handle] = 1;
             int raw = op->id == O_SULD && B(insn[i], 52, 1);
             u32 mask = raw ? 1u : B(insn[i], 20, 4), target = d;
@@ -2634,7 +2678,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                16384 texels, and the dispatch's own stores and atomics wouldn't reach it */
             if (op->id != O_SULD || buffer) {
                 int r32ui = op->id != O_SUST;
-                int type = dim; /* 1, 3 or 4: the forms supported() takes here */
+                int type = dim; /* 1, 3, 4 or 5: the forms supported() takes here */
                 int slot = direct_image_slot(&image_info, off, bindless, bank, r32ui, type);
                 if (slot == image_info.nimg) {
                     if (slot >= 8) return direct_reject(si, "storage image descriptor count");
@@ -2937,7 +2981,14 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         if (op->id == O_IPA) {
             if (B(insn[i], 51, 1)) needs_glsl = 1;
             u32 addr = B(insn[i], 30, 8) * 4;
-            if (addr == 0x64) {
+            if (B(insn[i], 38, 1) && a != 255) { /* IPA.IDX: every input the header declares may be the one */
+                used[a] = 1;
+                for (u32 input = 0; input < 32; input++)
+                    if ((sph[6 + input / 4] >> (input % 4 * 8)) & 0xFF) {
+                        inputs_used[input] = 1;
+                        if (ipa_interpolation(sph, input) == 2) needs_fragcoord = 1;
+                    }
+            } else if (addr == 0x64) {
                 layer_input_used = 1;
             } else if (addr == 0x3fc) {
                 needs_frontface = 1;
@@ -3521,7 +3572,8 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
         int integer = image_info.img[i].kind != 0, buffer = image_info.img[i].type == 1;
         c->image[i] = spv_emit_storage_image(
             &c->emit, integer ? c->u32_type : c->f32_type, shader_vk_set(stage),
-            (buffer ? SNX_VKB_IMGBUF : SNX_VKB_IMG) + (u32)i, buffer ? 5 : 1, image_info.img[i].type == 4,
+            (buffer ? SNX_VKB_IMGBUF : SNX_VKB_IMG) + (u32)i, buffer ? 5 : image_info.img[i].type == 5 ? 2 : 1,
+            image_info.img[i].type == 4,
             integer && (!buffer || image_info.img[i].kind == 1) ? 33 : 0, &c->image_type[i]);
         interfaces[count++] = c->image[i];
     }
@@ -3940,6 +3992,33 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     value = spv_emit_bitcast(&c->emit, c->u32_type, spv_emit_load(&c->emit, c->f32_type, pointer));
                 reg_write(c, d + k, value);
             }
+        } else if (op == O_ALD && a != 255) {
+            /* indexed: each word is the generic input component at the register plus the offset, chosen among
+               them (0 elsewhere), as the OpenGL translator's switch */
+            u32 width = B(w, 47, 2) + 1, components[ALD_INDEXED_INPUTS * 4], base;
+            for (u32 n = 0; n < ALD_INDEXED_INPUTS; n++) {
+                u32 vector = spv_emit_load(&c->emit, input_vec_type[n], inputs[n]);
+                for (u32 q = 0; q < 4; q++) {
+                    u32 value = spv_emit_vec4_extract(&c->emit, input_component_type[n], vector, q);
+                    components[n * 4 + q] =
+                        input_component_type[n] == c->u32_type ? value : spv_emit_bitcast(&c->emit, c->u32_type, value);
+                }
+            }
+            base = spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a),
+                                     spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 10)));
+            u32 values[4];
+            for (u32 k = 0; k < width; k++) {
+                u32 address = spv_emit_iadd_u32(&c->emit, c->u32_type, base,
+                                                spv_emit_constant_u32(&c->emit, c->u32_type, k * 4));
+                values[k] = c->zero;
+                for (u32 m = 0; m < ALD_INDEXED_INPUTS * 4; m++) {
+                    u32 at = spv_emit_constant_u32(&c->emit, c->u32_type, 0x80 + m * 4);
+                    values[k] = spv_emit_select(&c->emit, c->u32_type,
+                                                spv_emit_i_equal(&c->emit, c->bool_type, address, at), components[m],
+                                                values[k]);
+                }
+            }
+            for (u32 k = 0; k < width; k++) reg_write(c, d + k, values[k]); /* after the reads: d may be a */
         } else if (op == O_ALD) {
             u32 addr = B(w, 20, 10), width = B(w, 47, 2) + 1;
             for (u32 k = 0; k < width; k++) {
@@ -4053,8 +4132,9 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             }
             reg_write(c, d, c->zero); /* the output handle, which the host doesn't have */
         } else if (op == O_AL2P) {
-            u32 offset = spv_emit_constant_u32(&c->emit, c->u32_type, B(w, 20, 11));
+            u32 offset = spv_emit_constant_u32(&c->emit, c->u32_type, (u32)((i32)(B(w, 20, 11) << 21) >> 21));
             reg_write(c, d, spv_emit_iadd_u32(&c->emit, c->u32_type, reg_read(c, a), offset));
+            pred_write(c, B(w, 44, 3), c->false_value);
         } else if (op == O_ISBERD) {
             reg_write(c, d, reg_read(c, a));
         } else if (op == O_MOV32I) {
@@ -5684,7 +5764,35 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             u32 component = (addr >> 2) & 3;
             u32 value;
             u32 interpolation = 0;
-            if (addr == 0x64) {
+            int indexed = B(w, 38, 1) && a != 255;
+            if (indexed) {
+                /* IPA.IDX: the register holds the address; Metroid Prime 4's materials pick their UV set and
+                   tangent frame this way. Each input the header declares, read as the direct form reads it below,
+                   and the one at the address chosen (0 elsewhere) */
+                u32 address = reg_read(c, a), coord_w = 0;
+                value = zero_f;
+                for (u32 input = 0; input < 32; input++) {
+                    u32 vector = 0;
+                    if (!((sph[6 + input / 4] >> (input % 4 * 8)) & 0xFF)) continue;
+                    if (inputs[input]) vector = spv_emit_load(&c->emit, vec4, inputs[input]);
+                    for (u32 q = 0; q < 4; q++) {
+                        u32 candidate =
+                            vector ? spv_emit_vec4_extract(&c->emit, c->f32_type, vector, q)
+                                   : spv_emit_constant_f32(&c->emit, c->f32_type, q == 3 ? 1.0f : 0.0f);
+                        if (vector && ipa_interpolation(sph, input) == 2) {
+                            if (!coord_w)
+                                coord_w = spv_emit_vec4_extract(&c->emit, c->f32_type,
+                                                                spv_emit_load(&c->emit, vec4, fragcoord), 3);
+                            candidate = spv_emit_fmul(&c->emit, c->f32_type, candidate, coord_w);
+                            spv_emit_no_contraction(&c->emit, candidate);
+                        }
+                        u32 at = spv_emit_constant_u32(&c->emit, c->u32_type, 0x80 + input * 16 + q * 4);
+                        value = spv_emit_select(&c->emit, c->f32_type,
+                                                spv_emit_i_equal(&c->emit, c->bool_type, address, at), candidate,
+                                                value);
+                    }
+                }
+            } else if (addr == 0x64) {
                 value = layer_input ? spv_emit_bitcast(&c->emit, c->f32_type,
                                                        spv_emit_bitcast(&c->emit, c->u32_type,
                                                                         spv_emit_load(&c->emit, i32_type, layer_input)))
@@ -5719,7 +5827,7 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
                     value = spv_emit_constant_f32(&c->emit, c->f32_type, component == 3 ? 1.0f : 0.0f);
                 interpolation = ipa_interpolation(sph, input);
             }
-            if (addr >= 0x70 && addr < 0x80) {
+            if (!indexed && addr >= 0x70 && addr < 0x80) {
                 u32 coord = spv_emit_load(&c->emit, vec4, fragcoord);
                 value = spv_emit_vec4_extract(&c->emit, c->f32_type, coord, component);
                 /* a[0x7c] is the interpolated 1/w, FragCoord.w as it is: shaders take its reciprocal for
@@ -6024,14 +6132,15 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
             if (!buffer) {
                 u32 y = spv_emit_bitcast(&c->emit, i32_type, reg_read(c, a + 1));
                 /* a 2D array's layer is the low 16 bits of the third register, as TLD's is (Eden's MakeCoords in
-                   surface_load_store.cpp reads it the same way) */
-                coord = dim == 4 ? spv_emit_vec3_construct(
-                                       &c->emit, vec3_i32, x, y,
-                                       spv_emit_bitcast(&c->emit, i32_type,
-                                                        spv_emit_bitwise_and_u32(
-                                                            &c->emit, c->u32_type, reg_read(c, a + 2),
-                                                            spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff))))
-                                 : spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
+                   surface_load_store.cpp reads it the same way); a 3D image's depth is the whole register */
+                if (dim == 4 || dim == 5) {
+                    u32 z = reg_read(c, a + 2);
+                    if (dim == 4)
+                        z = spv_emit_bitwise_and_u32(&c->emit, c->u32_type, z,
+                                                     spv_emit_constant_u32(&c->emit, c->u32_type, 0xffff));
+                    coord = spv_emit_vec3_construct(&c->emit, vec3_i32, x, y, spv_emit_bitcast(&c->emit, i32_type, z));
+                } else
+                    coord = spv_emit_vec2_construct(&c->emit, vec2_i32, x, y);
             }
             u32 mask = op == O_SULD && B(w, 52, 1) ? 1u : B(w, 20, 4), source = d;
             if (op != O_SULD || buffer) {

@@ -849,7 +849,7 @@ int vk_tex_num(const u32* tic, const Surf* t) {
 }
 
 int vk_image_keyable(const ShaderInfo* si, int i) {
-    return (si->img[i].type == 3 || si->img[i].type == 4) && si->img[i].kind != 1;
+    return (si->img[i].type == 3 || si->img[i].type == 4 || si->img[i].type == 5) && si->img[i].kind != 1;
 }
 
 int vk_image_key(const ShaderInfo* si, int i, const u32* tic) {
@@ -860,12 +860,17 @@ VkImageView vk_storage_image_view(Surf* t, const ShaderInfo* si, int i, u64* byt
     VkComponentMapping identity = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                    VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
     *bytes = vk_surf_guest_size(t);
-    if (!t || !t->storage_capable || !vk_surf_can_writeback(t) || t->levels != 1 || t->depth3d != 1 ||
-        (si->img[i].type != 3 && si->img[i].type != 4) || !*bytes || *bytes > UINT32_MAX ||
+    int volume = si->img[i].type == 5;
+    if (!t || !t->storage_capable || !vk_surf_can_writeback(t) || t->levels != 1 || (!volume && t->depth3d != 1) ||
+        (si->img[i].type != 3 && si->img[i].type != 4 && !volume) || !*bytes || *bytes > UINT32_MAX ||
         (si->img[i].kind ? t->f.vk != VK_FORMAT_R32_UINT : t->f.is_int))
         return VK_NULL_HANDLE;
-    /* a 2D array surface sees every layer of the image, a single layer one too */
-    return vk_tex_view(t, si->img[i].type == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D, 0, &identity, 0);
+    /* a 2D array surface sees every layer of the image, a single layer one too; a 3D surface its whole volume
+       (vk_tex_view refuses a 3D view of any other image) */
+    VkImageViewType type = volume                 ? VK_IMAGE_VIEW_TYPE_3D
+                           : si->img[i].type == 4 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                  : VK_IMAGE_VIEW_TYPE_2D;
+    return vk_tex_view(t, type, 0, &identity, 0);
 }
 
 u32 vk_gbuf_desc(int stage, u32 off, const u32* v, u64* addr) {
@@ -898,6 +903,22 @@ static void rt_int_targets(const u32* r, u32* rm, u32* rs) {
         }
     }
 }
+/* the storage images of s, the program of stage, whose formats are the other one than their default (vk_image_key):
+   bits 8 and up of the key (rt_int) its variant is translated with */
+static u32 image_keys(const GpuChannel* ch, int stage, const VkSh* s) {
+    const u32* r = ch->r3d;
+    u64 tic_base = ((u64)r[0x55D] << 32) | r[0x55E];
+    u32 keys = 0;
+    for (int i = 0; i < s->si.nimg && i < 8; i++) {
+        if (!vk_image_keyable(&s->si, i)) continue;
+        ShTex handle_info = {
+            .cbuf_off = s->si.img[i].cbuf_off, .bindless = s->si.img[i].bindless, .bl_cbuf = s->si.img[i].bl_cbuf};
+        u32 handle = tex_handle(ch, stage, r[0x982], &handle_info), tic[8];
+        vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
+        if (vk_image_key(&s->si, i, tic)) keys |= 1u << (8 + i);
+    }
+    return keys;
+}
 /* resolves the textures of s0, the fragment program, into res (SH_MAXTEX entries, for stage_set), and fills fk with
    the variant they and the targets (rt_int, rt_sint) key. last_out: the generic outputs the stage before rasterization
    writes */
@@ -928,15 +949,7 @@ static void fs_key(GpuChannel* ch, const VkSh* s0, TexRes* res, u32 last_out, u3
         if (num == 2) fk->ts |= 1ull << i;
     }
     fk->rm &= s0->si.sph[18] ? 0xFF : 0;
-    u64 tic_base = ((u64)r[0x55D] << 32) | r[0x55E];
-    for (int i = 0; i < s0->si.nimg; i++) {
-        if (!vk_image_keyable(&s0->si, i)) continue;
-        ShTex handle_info = {
-            .cbuf_off = s0->si.img[i].cbuf_off, .bindless = s0->si.img[i].bindless, .bl_cbuf = s0->si.img[i].bl_cbuf};
-        u32 handle = tex_handle(ch, 4, r[0x982], &handle_info), tic[8];
-        vk_gmem_words(tic_base + (handle & 0xFFFFF) * 32ull, tic, 8);
-        if (vk_image_key(&s0->si, i, tic)) fk->rm |= 1u << (8 + i);
-    }
+    fk->rm |= image_keys(ch, 4, s0);
 }
 /* the fragment shader at addr in the variant fk names, s0 when it names none */
 static VkSh* fs_variant(GpuChannel* ch, u64 addr, VkSh* s0, const FsKey* fk) {
@@ -1669,17 +1682,21 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
             surf && is_target(surf, rt, zt, n) ? VK_NULL_HANDLE : vk_storage_image_view(surf, &s->si, i, &size);
         if (!view) {
             LOG_LIMIT(4,
-                      "vulkan: unsupported fragment storage image (draw skipped): %s handle %08x image %p format %u "
+                      "vulkan: unsupported %s storage image (draw skipped): %s handle %08x image %p format %u "
                       "raw %d integer %d storage %d levels %u depth %u size %llu target %d\n",
-                      kind == 1 ? "atomic" : "store", handle, (void*)surf, surf ? surf->f.vk : 0,
-                      surf ? surf->f.raw : 0, surf ? surf->f.is_int : 0, surf ? surf->storage_capable : 0,
+                      stage == 0 ? "vertex" : "fragment", kind == 1 ? "atomic" : "store", handle, (void*)surf,
+                      surf ? surf->f.vk : 0, surf ? surf->f.raw : 0, surf ? surf->f.is_int : 0, surf ? surf->storage_capable : 0,
                       surf ? surf->levels : 0, surf ? surf->depth3d : 0, (unsigned long long)size,
                       surf ? is_target(surf, rt, zt, n) : 0);
             return VK_NULL_HANDLE;
         }
-        int seen = 0;
+        /* a 3D surface's stores stay on the GPU: its write-back (flush_land) would land a single slice, and the
+           volumes the vertex stage fills (Metroid Prime 4's fog) are only sampled after */
+        int volume = s->si.img[i].type == 5, seen = 0;
         for (int j = 0; j < images->n; j++)
             if (images->surf[j] == surf) seen = 1;
+        if (volume) goto bind;
+        if (images->n == 8) return VK_NULL_HANDLE; /* the vertex and fragment stages' images together */
         /* an earlier draw's writes to it wait for their copy (image_pending): that copy, recorded later, takes this
            draw's writes too, over the same bytes from before them. Reading guest memory for this draw's own would land
            those writes first, waiting for the GPU (once a frame in Pokemon Legends Z-A). A landing during the setup
@@ -1694,7 +1711,9 @@ static VkDescriptorSet stage_set(GpuChannel* ch, int stage, VkSh* s, Surf** rt, 
         images->surf[images->n] = surf;
         images->size[images->n] = (u32)size;
         images->n++;
-        vk_surf_use(vk_cmd(), surf, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+    bind:
+        vk_surf_use(vk_cmd(), surf, VK_IMAGE_LAYOUT_GENERAL,
+                    stage == 0 ? VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT : VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_STORAGE_IMAGE_ACCESS);
         u32 binding = SNX_VKB_IMG + (u32)i;
         d.ii[binding] = (VkDescriptorImageInfo){VK_NULL_HANDLE, view, VK_IMAGE_LAYOUT_GENERAL};
@@ -1999,6 +2018,14 @@ static int draw_shaders(GpuChannel* ch, u32 topology, DrawShaders* o) {
     o->gs = gs_on ? vk_shader_get(ch, code + r[0x841], 0, ST_GS, 0, 0, gs_input_vertices(topology, tes_on, r[0xC8]),
                                   0, clip, 0, 0, 0, xfb_on ? &xfb : NULL)
                   : NULL;
+    /* a vertex program's stores, as a fragment program's (fs_key): their images' formats key its variant */
+    if (o->vs && !o->vs->failed && o->vs->si.nimg) {
+        u32 keys = image_keys(ch, 0, o->vs);
+        if (keys)
+            o->vs = vk_shader_get(ch, code + r[0x811], (r[0x800] & 1) ? code + r[0x801] : 0, ST_VS, attr_int, attr_sint,
+                                  keys, 0, tes_on || gs_on ? SNX_SH_NOT_LAST : clip, 0, 0, 0,
+                                  xfb_on && !tes_on && !gs_on ? &xfb : NULL);
+    }
     if ((tcs_on && (!o->tcs || o->tcs->failed)) || (tes_on && (!o->tes || o->tes->failed)) ||
         (gs_on && (!o->gs || o->gs->failed)) || !o->vs || o->vs->failed)
         return 0;
@@ -2426,7 +2453,7 @@ retry:
     int zt_ro = 0;
     u32 fb = 0;
     DrawImages images = {0};
-    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, &storage, NULL);
+    VkDescriptorSet vset = stage_set(ch, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, &storage, &images);
     VkDescriptorSet fset = fs ? stage_set(ch, 4, fs, rt, zt, n, &zt_ro, &fb, fres, &storage, &images) : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;

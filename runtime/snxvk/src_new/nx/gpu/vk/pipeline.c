@@ -275,12 +275,21 @@ void vk_pipeline_init(void) {
             if (image && (s >= 2 || i - SNX_VKB_IMG >= image_slots)) continue; /* compute and fragment */
             if (i >= SNX_VKB_TEXARRAY && !g_shader_texture_arrays) continue;
             if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_TEXARRAY && (s != 0 || i - SNX_VKB_IMGBUF >= buffer_slots)) continue;
-            if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_TEXARRAY) image = 1;
+            /* set 0's images are compute's, and the vertex stage's stores where the device has them */
+            VkShaderStageFlags image_stages =
+                s ? VK_SHADER_STAGE_FRAGMENT_BIT
+                  : VK_SHADER_STAGE_COMPUTE_BIT | (image && g_vk.feat.vertexPipelineStoresAndAtomics
+                                                       ? VK_SHADER_STAGE_VERTEX_BIT
+                                                       : 0);
+            if (i >= SNX_VKB_IMGBUF && i < SNX_VKB_TEXARRAY) {
+                image = 1;
+                image_stages = VK_SHADER_STAGE_COMPUTE_BIT;
+            }
             b[count++] = (VkDescriptorSetLayoutBinding){
                 .binding = i,
                 .descriptorType = binding_type(i),
                 .descriptorCount = (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1,
-                .stageFlags = image ? (s == 0 ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_FRAGMENT_BIT) : vis[s]};
+                .stageFlags = image ? image_stages : vis[s]};
         }
         for (int arrays = 0; arrays < 2; arrays++) {
             u32 n = count;
@@ -422,12 +431,13 @@ static u32* sh_spirv(VkSh* s, const u8* code, u64 h, int stage, const u32 mask[2
             image_slots = g_vk.props.limits.maxDescriptorSetStorageImages;
         int needs_unformatted = 0;
         for (int i = 0; i < s->si.nimg; i++) needs_unformatted |= s->si.img[i].kind == 0;
-        if (stage != ST_FS || (u32)s->si.nimg > image_slots ||
+        int vertex_stores = stage == ST_VS && g_vk.feat.vertexPipelineStoresAndAtomics;
+        if ((stage != ST_FS && !vertex_stores) || (u32)s->si.nimg > image_slots ||
             (needs_unformatted && !g_vk.feat.shaderStorageImageWriteWithoutFormat)) {
             free(spv);
             spv = NULL;
             snprintf(s->si.first_unsupported, sizeof s->si.first_unsupported,
-                     "fragment storage image feature or descriptor limit");
+                     "fragment or vertex storage image feature or descriptor limit");
         }
     }
     return spv;

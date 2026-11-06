@@ -40,6 +40,13 @@ Local changes to upstream (marked "SWR" in the code):
   gpu/texture/blocklinear.c  bl_land's base takes the padding and partial GOBs from them) instead of a whole copy of
                         those bytes first and the result over it; the same bytes land (checked against the old landing
                         on 200,000 random shapes). Overlapping rows or layers keep the old copy first
+  gpu/vk/surface.c      vk_surf_snap_put/take: a draw storage image's landed bytes kept as its next draw's bytes from
+  gpu/vk/image_out.c    before it, where guest memory still holds exactly them (compared after the CPU write tracking
+  gpu/vk/render.c       and GPU-side baselines, checked again at the bind), instead of reading guest memory into a new
+                        buffer at each bind
+  gpu/vk/buffer.c       vk_ww_landed_as: the pages of such a landing noted as landed, so its own writes, which the next
+                        epoch's scan reports, don't count as the CPU's while their bytes are unchanged (upstream notes
+                        a landing only through the alias pool's mirror, which our runtime lacks)
   gpu/vk/ui.c           vk_menu_draw: our in-game menu (runtime/ov_vk.h, ov_vk_frame) through the overlay pipeline
                         (pipeline_new split out of pipeline_make, one pipeline per target format)
   gpu/vk/vk.h           the declarations of the above

@@ -183,8 +183,12 @@ static void image_land(size_t index) {
     u64 id = o->id, keep_size = 0;
     u8* keep = NULL;
     vmaInvalidateAllocation(g_vk.vma, o->back_mem, o->back_off, o->back_size);
-    vk_surf_flush_land(o->surf, o->back, o->original, o->wgen, image_followed(id) ? &keep : NULL, &keep_size);
-    image_follow(id, keep, keep_size);
+    Surf* surf = o->surf;
+    vk_surf_flush_land(surf, o->back, o->original, o->wgen, &keep, &keep_size);
+    if (image_followed(id))
+        image_follow(id, keep, keep_size);
+    else
+        vk_surf_snap_put(surf, keep, keep_size); /* SWR: for its next draw, when memory still holds them */
     if ((index = image_find(id)) < g_image_out.count) image_remove(index);
 }
 /* An entry a draw's writes to surf go on from instead of reading its bytes from before the draw now: the newest over

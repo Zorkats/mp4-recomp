@@ -1056,6 +1056,60 @@ void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8**
     flush_land(s, p, original, wgen, original ? keep : NULL, keep_size);
     vk_result_end();
 }
+/* SWR: a storage image's landed bytes as its next draw's bytes from before it, instead of reading guest memory again
+   (a whole copy into a new buffer at each bind). Kept only where memory holds exactly them and write tracking watches
+   it: both baselines are taken first and memory compared after, so a write before them shows in the compare and one
+   after them in the trackers. Any host write to guest memory shows there (GetWriteWatch), the landings of the GPU's
+   results included; the GPU-side record is checked too. A page is scanned once an epoch, so the landing's own writes
+   would read as later ones (every bind missed): its pages are noted as landed (vk_ww_landed_as), whose reports count
+   only when their bytes changed. Under vk_lock, as the landing and the draw's setup are */
+void vk_surf_snap_put(Surf* s, u8* bytes, u64 size) {
+    u64 cpu = 0;
+    int tracked = 0;
+    free(s->snap);
+    s->snap = NULL;
+    if (!bytes) return;
+    if (own_any() || !size || size > UINT32_MAX || (s->gva >> 63) || gmmu_run(s->gva, size, &cpu) != size) {
+        free(bytes);
+        return;
+    }
+    s->snap_gw = gpu_mem_generation();
+    span_runs(s->gva, size, run_take, &tracked);
+    if (!tracked) {
+        free(bytes);
+        return;
+    }
+    span_runs(s->gva, size, run_cool, NULL);
+    s->snap_wseen = vk_ww_now();
+    /* the landing's writes on its whole pages, which a later scan may report after the baseline, count only where the
+       bytes aren't the landing's any more (its own changes are on the GPU's record, gpu_mem_written_shader). A note
+       hides no change: a report counts unless the page holds what the landing left */
+    u64 lo = (cpu + 0xfff) & ~0xfffull, hi = (cpu + size) & ~0xfffull;
+    if (hi > lo) vk_ww_landed_as(lo, hi - lo, GP(lo), bytes + (lo - cpu));
+    const u8* now = gmem_ptr_untracked(s->gva, size);
+    if (!now || memcmp(now, bytes, size)) {
+        free(bytes);
+        return;
+    }
+    s->snap = bytes;
+    s->snap_gva = s->gva;
+    s->snap_cpu = cpu;
+    s->snap_size = (u32)size;
+}
+u8* vk_surf_snap_take(Surf* s, u64 size) {
+    u64 cpu = 0;
+    if (!s->snap) return NULL;
+    gmem_need(s->gva, size); /* what gmem_read would land first: a landing of s's next result puts newer bytes */
+    u8* p = s->snap; /* that landing's, if it put any */
+    s->snap = NULL;
+    if (!p) return NULL;
+    if (s->snap_size == size && s->snap_gva == s->gva && !own_any() && gmmu_run(s->gva, size, &cpu) == size &&
+        cpu == s->snap_cpu && !gpu_mem_dirty_since(s->snap_gw, s->gva, size) &&
+        vk_written_since(GP(cpu), size, s->snap_wseen) == 0)
+        return p;
+    free(p);
+    return NULL;
+}
 void vk_surf_flush(Surf* s, const u8* original) {
     vk_result_begin();
     surf_flush(s, original);
@@ -1655,6 +1709,8 @@ int vk_rt_drawn_in(u64 lo, u64 hi, Surf** out, int max) {
 /* a surface's image and views go when the frame being recorded is done (descriptors in it may name them) */
 static void surf_free(Surf* s) {
     surf_changed(s->gva);
+    free(s->snap); /* SWR */
+    s->snap = NULL;
     if (s->lru) {
         g_held[lru_kind(s)].n--;
         g_held[lru_kind(s)].bytes -= s->bytes;

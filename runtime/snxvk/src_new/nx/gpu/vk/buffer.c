@@ -1418,6 +1418,24 @@ void vk_ww_landed(u64 cpu, u64 size, const u8* bytes) {
     }
     pm_unlock(&g_wland_lk);
 }
+/* SWR: the same for whole pages read where they are (no traps, so not through a mirror), whose landing left the bytes
+   expect: a CPU write after it, before the note, changes them and counts */
+void vk_ww_landed_as(u64 cpu, u64 size, const u8* live, const u8* expect) {
+    if (!live || !expect || (cpu & 0xfff) || cpu >= AS_SIZE || size > AS_SIZE - cpu) return;
+    pm_lock(&g_wland_lk);
+    for (u64 o = 0; o + 4096 <= size; o += 4096) {
+        if (g_wland_n == g_wland_cap) {
+            u32 cap = g_wland_cap ? g_wland_cap * 2 : 1024;
+            WwLanded* n = cap <= WW_LANDED_MAX ? (WwLanded*)realloc(g_wland, (size_t)cap * sizeof *n) : NULL;
+            if (!n) break;
+            g_wland = n;
+            g_wland_cap = cap;
+        }
+        g_wland[g_wland_n++] = (WwLanded){(cpu + o) >> 12, vk_hash(expect + o, 4096), live + o, g_wland_seq++};
+        g_wland_sorted = 0;
+    }
+    pm_unlock(&g_wland_lk);
+}
 static int landed_order(const void* a, const void* b) {
     const WwLanded *x = (const WwLanded*)a, *y = (const WwLanded*)b;
     if (x->page != y->page) return x->page < y->page ? -1 : 1;

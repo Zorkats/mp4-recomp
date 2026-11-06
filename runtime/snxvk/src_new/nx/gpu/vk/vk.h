@@ -670,6 +670,12 @@ typedef struct Surf {
     /* depth targets: undefined but for draws and clears predicated on the GPU, which may not have run, so they count
        as no draw (render.c zt_written) */
     int pred_undefined;
+    /* storage images: the bytes a draw's write-back last landed, snap_size of them at snap_gva (host run snap_cpu),
+       for the next draw's bytes from before it (vk_surf_snap_take), with the GPU-side and CPU write baselines taken
+       when memory was found to hold them (vk_surf_snap_put) */
+    u8* snap;
+    u64 snap_gva, snap_cpu, snap_gw;
+    u32 snap_size, snap_wseen;
 } Surf;
 enum { VK_LRU_NONE, VK_LRU_TEX, VK_LRU_RT };
 /* resolution= in the .ini: render targets are made this much bigger (read once, at startup) */
@@ -752,6 +758,11 @@ u64 vk_surf_flush_size(const Surf* s);
 void vk_surf_flush_record(Surf* s, VkBuffer buf, u64 at);
 /* keep: when non-NULL (and original is), the image's bytes as the landing leaves them, malloc'd, keep_size of them */
 void vk_surf_flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size);
+/* a storage image's landed bytes (malloc'd, size of them; taken) kept for its next draw where guest memory holds them
+   exactly, else freed; and taken back by that draw as its bytes from before it (malloc'd, the caller's), or NULL when
+   memory may have changed since: the caller reads memory then */
+void vk_surf_snap_put(Surf* s, u8* bytes, u64 size);
+u8* vk_surf_snap_take(Surf* s, u64 size);
 void vk_tex_note_writeback(Surf* s);
 /* A DMA copy's rows of block linear destination gva (wb bytes a row, blocks 2^bh GOBs high), line_bytes of each from
    byte ox of row oy on, as they are at rows_at in buf (rows_pitch bytes apart): copied into each texture whose level 0
@@ -1206,6 +1217,8 @@ void vk_mem_changed(u64 cpu, u64 len); /* gpu.c's g_gpu_mem_changed: the range c
 /* own.c's landed hook: host pages [cpu, cpu + size) a landing wrote, with their bytes then, whose next report as
    written counts only if those changed */
 void vk_ww_landed(u64 cpu, u64 size, const u8* bytes);
+/* SWR: the same for whole pages from cpu (page aligned) read in place at live, the landing having left expect's bytes */
+void vk_ww_landed_as(u64 cpu, u64 size, const u8* live, const u8* expect);
 
 /* pipeline.c */
 /* the constant buffer words a translation read (the translator resolves BRX jump tables through them): what it made

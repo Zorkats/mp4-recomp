@@ -2100,9 +2100,12 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         images->after[images->n] = 0;
         if (!seen && !vk_gfx_image_unrecorded(surf) &&
             !(images->after[images->n] = vk_gfx_image_after(surf, (u32)size))) {
-            u8* original = malloc((size_t)size);
-            if (!original) return VK_NULL_HANDLE;
-            gmem_read(surf->gva, original, size);
+            u8* original = vk_surf_snap_take(surf, size); /* SWR: its last landing's bytes, memory unchanged since */
+            if (!original) {
+                original = malloc((size_t)size);
+                if (!original) return VK_NULL_HANDLE;
+                gmem_read(surf->gva, original, size);
+            }
             images->original[images->n] = original;
         } else
             images->original[images->n] = NULL;

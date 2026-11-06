@@ -68,6 +68,15 @@ void kbm_keyboard(u64* buttons, i32* lx, i32* ly, i32* rx, i32* ry);
 /* the mouse onto the polled state: its buttons, and mouse look on the right stick while the mouse moves.
    active = 0 (the in-game menu is open) drops the movement and the clicks, so nothing jumps when it closes */
 void kbm_mouse(u64* buttons, i32* rx, i32* ry, int active);
+/* mouse aim (mouse_aim.py): the code module's exports, or NULL when it has none. While the game's look update takes
+   the counts (steps advances), kbm_mouse leaves the right stick alone; otherwise it moves the stick as before */
+typedef struct {
+  volatile int* pend;          /* [2] counts the look update hasn't taken yet, x right, y down */
+  volatile float* deg;         /* [2] degrees per count */
+  volatile u32* steps;         /* look updates that took the counts */
+  volatile float* mult;        /* the game's look multiplier at the last one */
+} KbmAim;
+void kbm_aim_bind(const KbmAim* aim);
 
 void mouse_map_reset(void);              /* [Input] mouse_buttons changed (main.c ini_apply) */
 

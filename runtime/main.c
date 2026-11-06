@@ -409,9 +409,9 @@ static const IniOpt INI_FG[]={
 static const IniOpt INI_INPUT[]={
   {"controller_map","","16 comma-separated button destinations (0..15, -1 disabled); empty = default. Keyboard and sticks unchanged."},
   {"mouse_look","1","1 = the mouse turns the camera (the right stick) while the game window has focus. The cursor is\n;   held in the window and hidden; F1 (the in-game menu) or switching to another window frees it"},
-  {"mouse_sensitivity","100","mouse look: camera turn speed for the same mouse movement, in percent (10-1000)"},
+  {"mouse_sensitivity","100","mouse look: how far the camera turns for the same mouse movement, in percent (10-1000). At 100%,\n;   one mouse count turns it 0.05 degrees in first person, with code built with mouse_aim.py"},
   {"mouse_invert_y","0","1 = moving the mouse up looks down"},
-  {"mouse_deadzone","15","mouse look: the smallest stick push any mouse movement makes, in percent (0-50). Raise it if slow\n;   mouse movement doesn't turn the camera, lower it if small movements turn it too far"},
+  {"mouse_deadzone","15","mouse look where the mouse moves the right stick (lock-on, morph ball, menus, code without\n;   mouse_aim.py): the smallest stick push any mouse movement makes, in percent (0-50). Raise it if slow\n;   mouse movement doesn't turn the camera, lower it if small movements turn it too far"},
   {"mouse_buttons","a,zl,r,-,-","mouse buttons left, right, middle, back, forward as Switch buttons: a b x y l r zl zr plus\n;   minus lstick rstick, - for none"},
   {"button_icons","auto","the game's button pictures: auto = from the controller connected at start (Xbox and Steam Deck:\n;   Xbox icons, DualShock 4: PS4, DualSense: PS5, Switch or none: the originals), or switch, xbox, ps4, ps5.\n;   Needs the icon packs in Metroid Prime 4 Beyond_data\\mods (the Play screen downloads them: Controls > Button icons)"},
   {"controller_api","auto","auto = SDL2 when SDL2.dll is next to the game (Bluetooth/USB Switch Pro, DualShock 4,\n;   DualSense, 8BitDo, Xbox...), else XInput. sdl or xinput to force one"},
@@ -682,6 +682,10 @@ static int load_code(void){
 #endif
   g_logic_k=(float*)plat_dl_sym(h,"swr_logic_k");   /* logic_rate.py builds only */
   g_logic_unknown=(volatile u64*)plat_dl_sym(h,"swr_logic_unknown"); g_logic_unknown_n=(volatile u32*)plat_dl_sym(h,"swr_logic_unknown_n");
+  { KbmAim a={(volatile int*)plat_dl_sym(h,"swr_aim_pend"),(volatile float*)plat_dl_sym(h,"swr_aim_deg"),
+      (volatile u32*)plat_dl_sym(h,"swr_aim_steps"),(volatile float*)plat_dl_sym(h,"swr_aim_mult")};
+    kbm_aim_bind(&a);   /* mouse_aim.py builds only */
+    LOG("code: mouse aim %s\n",a.pend? "built in (the mouse turns the camera directly in first person)" : "not built in (the mouse moves the right stick)"); }
   g_mod=f(); return 0; }
 
 static void build_dispatch(void){

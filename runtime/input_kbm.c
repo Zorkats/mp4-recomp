@@ -398,10 +398,43 @@ static void mouse_test(int* dx, int* dy, int* held){
   *held |= test_held;
 }
 
-/* Mouse look. The game turns the camera at a speed set by how far the right stick is pushed, so the mouse's speed
-   (counts per poll, 60 a second) becomes a stick deflection: KBM_LOOK_FULL_COUNTS counts in one poll at 100%
-   sensitivity is a full push. The game ignores small pushes (its stick dead zone), so any movement starts at
-   [Input] mouse_deadzone percent, and slow mouse movement still turns the camera slowly. */
+/* Mouse aim (mouse_aim.py builds): the game's look update adds the counts to its motion-control deltas, so a count
+   turns the camera by a fixed angle, KBM_AIM_DEG_PER_COUNT at 100% sensitivity. It runs once per logic step and
+   counts the steps in *steps; when that stops for KBM_AIM_LIVE_POLLS polls (lock-on, morph ball, menus, a code DLL
+   without it) the mouse moves the right stick instead, and the counts it left in *pend are dropped. */
+#define KBM_AIM_DEG_PER_COUNT 0.05f
+#define KBM_AIM_LIVE_POLLS 6
+#define KBM_ZL_BIT 8   /* the Switch ZL button: lock-on */
+static KbmAim g_aim;
+static u32 g_aim_seen;
+static int g_aim_idle = KBM_AIM_LIVE_POLLS;
+
+void kbm_aim_bind(const KbmAim* aim){
+  if(aim && aim->pend && aim->deg && aim->steps && aim->mult) g_aim = *aim;
+  else memset(&g_aim, 0, sizeof g_aim);
+  g_aim_seen = g_aim.steps ? __atomic_load_n(g_aim.steps, __ATOMIC_RELAXED) : 0;
+  g_aim_idle = KBM_AIM_LIVE_POLLS;
+}
+
+/* once per poll: 1 while the look update took the counts in the last KBM_AIM_LIVE_POLLS polls */
+static int aim_live(void){
+  if(!g_aim.pend) return 0;
+  u32 s = __atomic_load_n(g_aim.steps, __ATOMIC_RELAXED);
+  if(s != g_aim_seen){ g_aim_seen = s; g_aim_idle = 0; }
+  else if(g_aim_idle < KBM_AIM_LIVE_POLLS) g_aim_idle++;
+  return g_aim_idle < KBM_AIM_LIVE_POLLS;
+}
+
+static void aim_drop(void){
+  if(!g_aim.pend) return;
+  for(int i = 0; i < 2; i++) __atomic_store_n(&g_aim.pend[i], 0, __ATOMIC_RELAXED);
+}
+
+/* Mouse look on the right stick, where mouse aim isn't running. The game turns the camera at a speed set by how far
+   the right stick is pushed, so the mouse's speed (counts per poll, 60 a second) becomes a stick deflection:
+   KBM_LOOK_FULL_COUNTS counts in one poll at 100% sensitivity is a full push. The game ignores small pushes (its
+   stick dead zone), so any movement starts at [Input] mouse_deadzone percent, and slow mouse movement still turns
+   the camera slowly. */
 #define KBM_LOOK_FULL_COUNTS 40.0f
 static float look_axis(int counts, float gain, float dead){
   if(counts == 0) return 0.0f;
@@ -415,10 +448,24 @@ void kbm_mouse(u64* buttons, i32* rx, i32* ry, int active){
   int dy = __atomic_exchange_n(&g_mouse_dy, 0, __ATOMIC_RELAXED);
   int held = __atomic_load_n(&g_mouse_held, __ATOMIC_RELAXED) | __atomic_exchange_n(&g_mouse_tapped, 0, __ATOMIC_RELAXED);
   mouse_test(&dx, &dy, &held);
-  if(!active || !g_opt_mouse_look) return;
+  int live = aim_live();
+  if(!active || !g_opt_mouse_look){ aim_drop(); return; }
   mouse_map();
   for(int i = 0; i < KBM_MOUSE_COUNT; i++)
     if((held >> i & 1) && g_mouse_bit[i] >= 0) *buttons |= 1ull << g_mouse_bit[i];
+  if(live){
+    float deg = KBM_AIM_DEG_PER_COUNT * (float)g_opt_mouse_sens / 100.0f;
+    g_aim.deg[0] = deg;
+    g_aim.deg[1] = g_opt_mouse_invert_y ? -deg : deg;
+    if(dx) __atomic_fetch_add(&g_aim.pend[0], dx, __ATOMIC_RELAXED);
+    if(dy) __atomic_fetch_add(&g_aim.pend[1], dy, __ATOMIC_RELAXED);
+    if(dx || dy){ static int said; if(!said){ said = 1; LOG("input: mouse aim in use (look multiplier %g)\n", (double)*g_aim.mult); } }
+    return;
+  }
+  aim_drop();
+  /* ZL held (from any source) while the look update isn't running: locked on. The game keeps the camera on the
+     target, and a right stick push would pull it off, so the mouse does nothing until ZL is released */
+  if(g_aim.pend && (*buttons >> KBM_ZL_BIT & 1)) return;
   if(!dx && !dy) return;   /* the mouse is still: the controller's right stick, if any, stays in charge */
   float gain = (float)g_opt_mouse_sens / 100.0f / KBM_LOOK_FULL_COUNTS;
   float dead = (float)g_opt_mouse_deadzone / 100.0f;
@@ -427,5 +474,5 @@ void kbm_mouse(u64* buttons, i32* rx, i32* ry, int active){
   if(g_opt_mouse_invert_y) sy = -sy;
   *rx = (i32)(sx * 32767.0f);
   *ry = (i32)(sy * 32767.0f);
-  { static int said; if(!said){ said = 1; LOG("input: mouse look in use\n"); } }
+  { static int said; if(!said){ said = 1; LOG("input: mouse look on the right stick in use\n"); } }
 }

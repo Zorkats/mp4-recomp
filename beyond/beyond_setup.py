@@ -446,6 +446,7 @@ def main():
         gen_key = hashlib.sha1(open(os.path.join(ex_dst, 'main'), 'rb').read()[:0x100] + (open(PATCHES, 'rb').read() if os.path.isfile(PATCHES) else b'')
                                + open(os.path.join(HERE, 'codegen.py'), 'rb').read() + open(os.path.join(HERE, 'metroid_perf.py'), 'rb').read()
                                + open(os.path.join(HERE, 'logic_rate.py'), 'rb').read()
+                               + open(os.path.join(HERE, 'mouse_aim.py'), 'rb').read()
                                # the instruction templates, and the switch that turns the second inline SIMD tier on
                                + open(os.path.join(HERE, 'a64.py'), 'rb').read()
                                + ('simd_inline=%s' % os.environ.get('SWR_SIMD_INLINE', '0')).encode()).hexdigest()

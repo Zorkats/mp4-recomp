@@ -618,10 +618,10 @@ static std::vector<Opt> build_options() {
     // Controls
     B("mouse_look", "Input", "Controls", "Mouse look", LIVE_YES, "1",
       "The mouse turns the camera. Left click shoots, right click locks on, middle click fires missiles. F1 or switching windows frees the cursor.");
-    I("mouse_sensitivity", "Input", "Controls", "Mouse look sensitivity", LIVE_YES, "100", 25, 400, 5, "Percent: higher turns the camera faster for the same mouse movement.");
+    I("mouse_sensitivity", "Input", "Controls", "Mouse look sensitivity", LIVE_YES, "100", 25, 400, 5, "Percent: higher turns the camera further for the same mouse movement. At 100%, one mouse count turns it 0.05 degrees in first person.");
     B("mouse_invert_y", "Input", "Controls", "Invert mouse up and down", LIVE_YES, "0", "");
     I("mouse_deadzone", "Input", "Controls", "Mouse look starting push", LIVE_YES, "15", 0, 50, 1,
-      "Percent of stick push that any mouse movement starts from. Raise it if slow movement doesn't turn the camera, lower it if small movements turn it too far.");
+      "Where the mouse moves the right stick (lock-on, morph ball, menus): percent of stick push any mouse movement starts from. Raise it if slow movement doesn't turn the camera, lower it if small movements turn it too far.");
     C("button_icons", "Input", "Controls", "Button icons", LIVE_RESTART, "auto",
       {{"auto", "Automatic"}, {"switch", "Switch (original)"}, {"xbox", "Xbox"}, {"ps4", "PlayStation 4"}, {"ps5", "PlayStation 5"}},
       "Automatic: from the controller connected when the game starts. Xbox controllers and the Steam Deck get Xbox icons, DualShock 4 PS4 icons, DualSense PS5 icons, Switch controllers the originals.");

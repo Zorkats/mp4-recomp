@@ -118,6 +118,39 @@ int main(void){
   want_i("and doesn't arrive once it closes",mouse(0,0,1).rx,0);
   g_opt_mouse_look=0; kbm_mouse_motion(40,0); want_i("mouse_look=0: no camera",mouse(0,0,1).rx,0); g_opt_mouse_look=1;
 
+  /* mouse aim: the code module's look update takes the pending counts once per step and counts its steps */
+  { static volatile int pend[2]; static volatile float deg[2], mult=1.5f; static volatile u32 steps;
+    KbmAim a={pend,deg,&steps,&mult}; kbm_aim_bind(&a);
+    kbm_mouse_motion(40,0); want_i("bound, look update not running: the stick still moves",mouse(0,0,1).rx,32767);
+    want_i("and nothing is left pending",pend[0],0);
+    steps++; kbm_mouse_motion(25,-10); { Poll p=mouse(1234,-99,1);
+      want_i("look update running: the controller's stick is left alone (x)",p.rx,1234); want_i("(y)",p.ry,-99); }
+    want_i("the counts wait for the look update (x)",pend[0],25); want_i("(y, screen down)",pend[1],-10);
+    want_i("100% sensitivity: 0.05 degrees a count",(i32)(deg[0]*1000.0f+0.5f),50);
+    want_i("vertical the same",(i32)(deg[1]*1000.0f+0.5f),50);
+    kbm_mouse_motion(-5,0); mouse(0,0,1); want_i("they add up until a step takes them",pend[0],20);
+    pend[0]=pend[1]=0; steps++;   /* a step took them */
+    g_opt_mouse_invert_y=1; kbm_mouse_motion(0,3); mouse(0,0,1);
+    want_i("inverted: the vertical degrees flip",(i32)(deg[1]*1000.0f-0.5f),-50); g_opt_mouse_invert_y=0;
+    g_opt_mouse_sens=200; kbm_mouse_motion(1,0); mouse(0,0,1);
+    want_i("200%: 0.1 degrees a count",(i32)(deg[0]*1000.0f+0.5f),100); g_opt_mouse_sens=100;
+    steps++; kbm_mouse_motion(40,0); mouse(0,0,0);
+    want_i("menu open: the movement and what was pending are dropped (x)",pend[0],0); want_i("(y)",pend[1],0);
+    for(int i=0;i<4;i++) mouse(0,0,1);
+    kbm_mouse_motion(40,0); want_i("5 polls without a step: still mouse aim",mouse(0,0,1).rx,0);
+    want_i("its counts pending",pend[0],40);
+    kbm_mouse_motion(40,0); want_i("6 polls without a step (lock-on): the stick again",mouse(0,0,1).rx,32767);
+    want_i("and the counts no step took are dropped",pend[0],0);
+    kbm_mouse_button(KBM_MOUSE_RIGHT,1); kbm_mouse_motion(40,0); { Poll p=mouse(0,0,1);
+      want_i("locked on (right click, ZL) without the look update: the mouse leaves the stick",p.rx,0); want_u("ZL still pressed",p.b,1ull<<8); }
+    kbm_mouse_button(KBM_MOUSE_RIGHT,0);
+    { Poll p={1ull<<8,0,0,0,0}; kbm_mouse_motion(40,0); kbm_mouse(&p.b,&p.rx,&p.ry,1); want_i("ZL from the keyboard or a controller too",p.rx,0); }
+    kbm_mouse_motion(40,0); want_i("ZL released: the stick again",mouse(0,0,1).rx,32767);
+    kbm_mouse_button(KBM_MOUSE_RIGHT,1); steps++; kbm_mouse_motion(7,0); mouse(0,0,1);
+    want_i("ZL held with the look update running (no target): mouse aim",pend[0],7); pend[0]=0; kbm_mouse_button(KBM_MOUSE_RIGHT,0);
+    steps++; kbm_mouse_motion(7,0); want_i("a step again: mouse aim again",mouse(0,0,1).rx,0); want_i("with only the new counts",pend[0],7);
+    kbm_aim_bind(0); kbm_mouse_motion(40,0); want_i("unbound: the stick",mouse(0,0,1).rx,32767); }
+
   /* mouse buttons */
   kbm_mouse_button(KBM_MOUSE_LEFT,1); want_u("left click is A",mouse(0,0,1).b,1ull<<0);
   kbm_mouse_button(KBM_MOUSE_LEFT,0); want_u("released",mouse(0,0,1).b,0);

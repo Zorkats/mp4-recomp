@@ -13,7 +13,7 @@ import os, sys, shutil, zipfile, hashlib, fnmatch, time, subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GCC = os.path.join(ROOT, 'gcc', 'Library')
 GV = '14.2.0'; TRIPLE = 'x86_64-w64-mingw32'
-RECOMPILER_PY = ['switchrecomp.py', 'codegen.py', 'a64.py', 'nxloader.py', 'metroid_perf.py', 'logic_rate.py']
+RECOMPILER_PY = ['switchrecomp.py', 'codegen.py', 'a64.py', 'nxloader.py', 'metroid_perf.py', 'logic_rate.py', 'mouse_aim.py']
 
 
 def cp(src, dst):
@@ -309,7 +309,7 @@ the game with a bundled GCC, a Play / settings screen, and an in-game menu (F1 o
 
 | path | what |
 |---|---|
-| `switchrecomp.py`, `codegen.py`, `a64.py`, `nxloader.py`, `metroid_perf.py`, `logic_rate.py` | SwitchRecomp: ARM64 → C translator (Apache-2.0) |
+| `switchrecomp.py`, `codegen.py`, `a64.py`, `nxloader.py`, `metroid_perf.py`, `logic_rate.py`, `mouse_aim.py` | SwitchRecomp: ARM64 → C translator (Apache-2.0) |
 | `runtime/` | the runtime: kernel, services, GPU → OpenGL, audio, video, input |
 | `runtime/beyond_ui/` | front end: `fe.cpp` (setup, Play, settings), `ov.cpp` (in-game menu), `ui.cpp` (theme, widgets, settings table) |
 | `runtime/snxvk/` | ScarletNX's native Vulkan renderer (GPL-3.0, main b5f4f14) in `src_new/`, vendored, symbols prefixed `snxv_`; our DLSS code in `src_new/nx/gpu/vk/dlss.c` |

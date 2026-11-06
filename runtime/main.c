@@ -432,7 +432,7 @@ static const IniOpt INI_REC[]={
 static const IniOpt INI_DBG[]={
   {"log","1","Log detail: 1 = normal, 2 = everything (slow)"},
   {"diag","0","1 = automatic diagnostic dumps (F5 always works)"},
-  {"profile","0","1 = write profile.txt every 10 seconds (CPU profiler)"},
+  {"profile","0","1 = write profile.txt every 10 seconds (CPU profiler); with vulkan_native also the GPU's time per pass in the log"},
   {NULL,NULL,NULL}};
 #ifndef SWR_RELEASE
 static const IniSec INI_SECS[]={{"Display",INI_DISPLAY},{"Graphics",INI_GRAPHICS},{"Performance",INI_PERF},{"Frame generation",INI_FG},{"Input",INI_INPUT},{"Audio",INI_AUDIO},{"Launcher",INI_LAUNCHER},{"Recording",INI_REC},{"Debug",INI_DBG},{NULL,NULL}};

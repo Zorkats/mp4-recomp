@@ -1,22 +1,42 @@
 Native Vulkan renderer (ini renderer=vulkan_native), taken from ScarletNX
-(https://github.com/scarletnx/ScarletNX, main branch commit b5f4f14f2bfc, fetched 2026-10-21), itself a fork of
-SwitchRecomp. The sources are in src_new/ (src/ in a private checkout is the earlier 2026-10-18 copy, not used).
+(https://github.com/scarletnx/ScarletNX, main branch commit 3f15d931fb4b, fetched 2026-11-05), itself a fork of
+SwitchRecomp. The sources are in src_new/: the files the gpu, shader and vk components build from, with the headers
+they include and the code generators (src/ in a private checkout is the earlier 2026-10-18 copy, not used).
 
 LICENSE: the code in this folder is GPL-3.0-or-later (LICENSE; MZ Labs' original parts Apache-2.0, LICENSE.apache,
 NOTICE). A runtime EXE built with libsnxvk_new.a linked in is therefore a GPL-3.0 work: fine for personal use; anyone
 given such an EXE must also be offered this source. A build with SWR_NO_SNXVK=1 leaves it out.
 
-deps/: Vulkan-Headers 1.4.365, volk 1.4.363, VulkanMemoryAllocator 3.4.0, the versions and SHA-256 hashes
-ScarletNX's cmake/dependencies.cmake pins (verified).
+deps/: Vulkan-Headers 1.4.367, volk 1.4.363, VulkanMemoryAllocator 3.4.0, xxHash 0.8.4 and zstd 1.5.7 (its lib/
+sources only), the versions and SHA-256 hashes ScarletNX's cmake/dependencies.cmake pins (verified).
 src_new/tools/: upstream's shaderdec and settingsgen code generators (same project, same licence).
 
+Left out of the build: the NVN driver path (gpu/nvn, off by default upstream), FFmpeg NVDEC (vk/nvdec.c; our host1x
+decodes video) and the SDL window (common/gpu/vk/window.c). vk/uma.c is built but kept off: swr_settings.c sets
+vk_memory=1 (guest buffers copied), as its in-place import needs memory hooks our runtime doesn't have.
+
 Local changes to upstream (marked "SWR" in the code):
-  gpu/gpu.c             plat_prof_mark_gpu (our profiler samples the renderer's GPU thread)
-  gpu/vk/hdr.c          HDR output and the FXAA present pass; the pass records through the recording thread's ring
-                        (it drained the ring every frame before, which sometimes waited seconds)
-  gpu/vk/renderer.c     the HDR/FXAA present pass, DLSS frame hook, "slow present" step timing (logs over 250 ms)
-  gpu/vk/render.c, texture.c, device.c, spirv_translate.c: DLSS hooks (dlss.c, private builds only; dlss_stub.c here)
-  gpu/vk/swr_settings.c, gpu/maxwell/mme_jit_stub.c: our settings and no LLVM macro JIT (the interpreter runs every macro)
+  gpu/gpu.c             plat_prof_mark_gpu (our profiler samples the renderer's GPU thread); the save state layout
+                        check (gpu_state_schema) only under clang, whose __builtin_dump_struct GCC lacks
+  gpu/vk/buffer.c       own buffers for small ranges only once their data stayed the same across two presents
+                        (own_ready), made at the frame's end in one batch (vk_buf_promote) instead of ending the
+                        rendering pass for a copy and a barrier at each draw that found one ready; big ranges with write
+                        tracking still take theirs at once. Their counts in the buffer stats (profile=1)
+  gpu/vk/cmd.c          vk_buf_promote before a frame's last submission when it ends without a present
+  gpu/vk/hdr.c          HDR output, FXAA, sharpening, the FPS counter and the skip prompt in one present pass, recorded
+                        through the recording thread's ring; vk_hdr_mid_target (the SDR image the in-game menu draws on
+                        with HDR output)
+  gpu/vk/renderer.c     the present pass and the in-game menu's draw at each present; a stats copy that read past
+                        its source array (memcpy of the longer one's size)
+  gpu/vk/device.c       VK_EXT_swapchain_colorspace asked for with hdr=1, the HDR swapchain format (scRGB FP16, else
+                        HDR10 PQ), the present pass's views dropped with the swapchain
+  gpu/vk/ui.c           vk_menu_draw: our in-game menu (runtime/ov_vk.h, ov_vk_frame) through the overlay pipeline
+                        (pipeline_new split out of pipeline_make, one pipeline per target format)
+  gpu/vk/vk.h           the declarations of the above
+  gpu/vk/swr_glue.c     the renderer interface as plain functions for runtime/snxvk_glue.c, so it mirrors no struct
+  gpu/vk/swr_settings.c our .ini's settings (profile=1 also turns on vk_gpu_profile and vk_buffer_stats)
+  gpu/vk/dlss.c, dlss_stub.c: DLSS (private builds only; dlss_stub.c in the public one). Its hooks in render.c,
+                        texture.c, device.c and spirv_translate.c are not yet carried over to this commit
 
 Build: set GLSLANG=<glslang.exe 16.6.0> and run python\python.exe work-profiler\build_snxvk2.py
 (SWR_NO_DLSS=1: runtime\snxvk\libsnxvk_new_nodlss.a, the public build), then the normal --build-runtime links it and

@@ -157,6 +157,11 @@ void vk_hdr_swapchain_gone(void) {
     }
 }
 
+void vk_hdr_mid_target(VkImageView* view, VkFormat* format) {
+    *view = g_mid_view;
+    *format = g_mid_fmt;
+}
+
 /* the SDR image the frame is letterboxed into while the swapchain is HDR: the swapchain's size, sRGB when the frame
    is (a blit between sRGB formats keeps the bytes, as the SDR path's blit to an sRGB swapchain does). NULL = can't */
 VkImage vk_hdr_mid(int srgb) {

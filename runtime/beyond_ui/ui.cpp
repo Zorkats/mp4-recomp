@@ -642,7 +642,8 @@ static std::vector<Opt> build_options() {
     C("recording_fps", "Recording", "Advanced", "Recording FPS", LIVE_YES, "60", {{"30", "30"}, {"60", "60"}}, "");
     C("log", "Debug", "Advanced", "Log detail", LIVE_YES, "1", {{"1", "Normal"}, {"2", "Everything (slow)"}}, "");
     B("diag", "Debug", "Advanced", "Automatic diagnostic dumps", LIVE_YES, "0", "");
-    B("profile", "Debug", "Advanced", "CPU profiler (profile.txt every 10 s)", LIVE_RESTART, "0", "");
+    B("profile", "Debug", "Advanced", "CPU profiler (profile.txt every 10 s)", LIVE_RESTART, "0",
+      "With Native Vulkan, the GPU's time per rendering pass goes to the log too.");
     C("menu_shortcut", "Launcher", "Controls", "In-game menu button", LIVE_YES, "home", {{"home", "Home / Guide / PS"}, {"minus_plus", "- and + together"}, {"l3_r3", "L3 + R3 held 1 s"}},
       "F1 on the keyboard always opens the menu.");
     B("skip_launcher", "Launcher", "Advanced", "Skip the Play screen at start", LIVE_YES, "0", "Hold Shift while starting to see it again.", false);

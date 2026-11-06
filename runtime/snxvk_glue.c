@@ -29,7 +29,7 @@ int snxvk_opt_vsync=1;      /* their g_opt_vsync: FIFO presentation (ours means 
 
 int pm_trylock(PMutex* m){ return TryAcquireSRWLockExclusive(&m->l)? 1 : 0; }
 
-typedef struct { const u8* data; u64 size; int borrowed; } PFileMap;
+typedef struct { const u8* data; u64 size; int borrowed; int heap; } PFileMap;
 int plat_file_map(PFileMap* m, const char* path){
   memset(m,0,sizeof *m); FILE* f=fopen(path,"rb"); if(!f) return -1;
   _fseeki64(f,0,SEEK_END); i64 n=_ftelli64(f); _fseeki64(f,0,SEEK_SET);
@@ -57,15 +57,74 @@ void ui_atlas_done(void){}
 static PMutex g_ui_lk; static int g_ui_lk_init;
 void ui_lock(void){ if(!g_ui_lk_init){ pm_init(&g_ui_lk); g_ui_lk_init=1; } pm_lock(&g_ui_lk); }
 void ui_unlock(void){ pm_unlock(&g_ui_lk); }
-void overlay_draw(void* l, int sw, int sh){ (void)l; (void)sw; (void)sh; }
+void overlay_draw(void* l, int sw, int sh, u64 now_ns){ (void)l; (void)sw; (void)sh; (void)now_ns; }
+void overlay_place(int sw, int sh, int* x, int* y, int* scale){ (void)sw; (void)sh; *x=0; *y=0; *scale=1; }
+void hud_draw(void* l, const int safe[4], int scale){ (void)l; (void)safe; (void)scale; }
+void stats_frame(u64 now_ns){ (void)now_ns; }
+void stats_draw(void* l, const int safe[4], int scale, u64 now_ns){ (void)l; (void)safe; (void)scale; (void)now_ns; }
+const u8* ui_image_get(u32* version){ *version=0; return NULL; }
+void guest_stats_log(u64 now_ns, u64 presents){ (void)now_ns; (void)presents; }
 void vpad_draw(void* l, const int safe[4]){ (void)l; (void)safe; }
 
 
-/* ---- ScarletNX main b5f4f14f2bfc asks these of its own runtime. Ours has no GPU-owned memory traps, no shipped-shader
-   pass (its loader and RomFS readers), no NVN trace, no launcher overlay and no FFmpeg NVDEC, so those answer "none" */
+/* ---- ScarletNX main 3f15d931fb4b asks these of its own runtime. Ours has no GPU-owned memory traps, no shipped-shader
+   pass (its loader and RomFS readers), no launcher overlay and no FFmpeg NVDEC, so those answer "none" */
 typedef struct { u64 base, end, heap, heap_size, alias, alias_size, stack, stack_size, kern, kern_end; } SnxMemLayout;
 SnxMemLayout g_layout={AS_BASE,AS_SIZE,HEAP_BASE,HEAP_SIZE,ALIAS_BASE,ALIAS_SIZE,STACK_BASE,STACK_SIZE,KERN_BASE,KERN_END};
-int g_own_any;
+u64 g_as_size=AS_SIZE;   /* their AS_SIZE: the guest address space our g_mem reservation covers */
+/* written-page tracking: GetWriteWatch over the MEM_WRITE_WATCH reservation (plat_ww_scan below). It has no "hot"
+   pages (theirs: pages a protection-based tracker left open), so nothing is ever hot and cooling has nothing to do */
+int mem_ww_probe(void (*cb)(u8* p, u64 size)){ return plat_ww_scan(g_mem,4096,cb); }
+int plat_ww_hot_in(const u8* p, u64 size){ (void)p; (void)size; return 0; }
+void plat_ww_cool(u8* p, u64 size, void (*cb)(u8* p, u64 size)){ (void)p; (void)size; (void)cb; }
+u64 plat_vm_page(void){ return 4096; }
+u64 plat_monotonic_ns(void){ return 0; }   /* Windows has no CLOCK_MONOTONIC: 0, as upstream answers there */
+/* no guest page is known to be mapped at two addresses (their mem.c alias table) and no memory pool: the old library
+   didn't ask, and these answers keep its behavior */
+int mem_alias_any(void){ return 0; }
+void mem_alias_peers(u64 a, u64 size, void (*fn)(void* user, u64 at, u64 n), void* user){ (void)a; (void)size; (void)fn; (void)user; }
+int mem_pool_offset(u64 a, u64* off){ (void)a; (void)off; return -1; }
+u8* plat_alias_mirror(void){ return NULL; }
+/* guest memory the GPU reads in place (vk/uma.c): kept off by vk_memory=1 (swr_settings.c), so these never run; they
+   answer "unavailable" if anything asks */
+int mem_identity(void){ return 0; }
+u64 mem_mapped_run(u64 addr, u64 size){ (void)addr; (void)size; return 0; }
+void mem_set_pages_replaced(void (*fn)(u64 a, u64 size)){ (void)fn; }
+int mem_migrate(u64 a, u64 size, int fd){ (void)a; (void)size; (void)fd; return -1; }
+int mem_unmigrate(u64 a, u64 size){ (void)a; (void)size; return -1; }
+int mem_movable(u64 a, u64 size){ (void)a; (void)size; return 0; }
+void mem_set_placed(const void* p){ (void)p; }
+int plat_alias_unmap(u8* p, u64 size){ (void)p; (void)size; return -1; }
+int plat_gpu_buffer(u64 size, int* fd, void** handle){ (void)size; *fd=-1; *handle=NULL; return -1; }
+void plat_gpu_buffer_free(int fd, void* handle, u64 size){ (void)fd; (void)handle; (void)size; }
+int plat_vm_map_fd(u8* p, u64 size, int fd, u64 off){ (void)p; (void)size; (void)fd; (void)off; return -1; }
+void plat_vm_fd_close(int fd){ (void)fd; }
+/* save states: our runtime saves none of the renderer's state, so no function table */
+void* state_fn_find(const char* name){ (void)name; return NULL; }
+const char* state_fn_name(void* fn){ (void)fn; return NULL; }
+/* the display's refresh period (display.c's clock), from the window's monitor; re-read once a second */
+u64 backend_display_refresh_ns(void){
+  static volatile u64 cached, at;
+  u64 now=plat_ns(); if(at && now-at<1000000000ull) return cached;
+  extern void* backend_window_monitor(void); HMONITOR mon=(HMONITOR)backend_window_monitor();
+  MONITORINFOEXW mi; mi.cbSize=sizeof mi; DEVMODEW dm; memset(&dm,0,sizeof dm); dm.dmSize=sizeof dm; u64 r=0;
+  if(mon && GetMonitorInfoW(mon,(MONITORINFO*)&mi) && EnumDisplaySettingsW(mi.szDevice,ENUM_CURRENT_SETTINGS,&dm) && dm.dmDisplayFrequency>1)
+    r=1000000000ull/dm.dmDisplayFrequency;
+  cached=r; at=now; return r; }
+void* backend_vk_driver(void){ return NULL; }   /* the system's Vulkan loader */
+void backend_vk_check(void){}
+void pm_lock_announce(PMutex* m, const char* name){ (void)m; (void)name; }   /* Tracy lock names: no Tracy here */
+void snx_path_native(char* path){ for(; *path; path++) if(*path=='/') *path='\\'; }
+/* the thread's name for debuggers and crash reports (SetThreadDescription, Windows 10 1607+; looked up so older
+   systems still start) */
+void snx_thread_name(const char* name){
+  typedef HRESULT (WINAPI *SetDesc)(HANDLE, PCWSTR); static SetDesc fn; static int looked;
+  if(!looked){ fn=(SetDesc)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"),"SetThreadDescription"); looked=1; }
+  if(!fn || !name) return;
+  wchar_t w[64]; if(MultiByteToWideChar(CP_UTF8,0,name,-1,w,64)>0){ w[63]=0; fn(GetCurrentThread(),w); } }
+u32 g_nown;   /* no GPU-owned memory entries: no traps */
+u32 own_lookup(u64 a, u64 n, void* out, u32 max){ (void)a; (void)n; (void)out; (void)max; return 0; }
+int own_traps(void){ return 0; }
 int own_init(const void* hooks){ (void)hooks; return -1; }   /* no traps: the renderer lands GPU writes instead (owned.c) */
 int own_begin(u64 a, u64 n, void* r, u64 o){ (void)a; (void)n; (void)r; (void)o; return -1; }
 void own_drop(u64 a, u64 n){ (void)a; (void)n; }
@@ -77,7 +136,6 @@ u64 own_landings(void){ return 0; }
    on a memory trap answered under that lock; ours can't, so they wake at once */
 void syncpt_add_quiet(u32 id, u32 n){ extern void syncpt_incr(u32); while(n--) syncpt_incr(id); }
 void syncpt_events(void){}
-u64 kernel_find_symbol_exact(const char* name){ (void)name; return 0; }
 void loader_segments(void* each, void* ctx){ (void)each; (void)ctx; }
 /* the shipped-shader pass's RomFS readers (shipped_pass.c, prepare_shaders on): only system/shd/*.bshdat
    is listed (the OpenGL pre-build reads the same; Metroid Prime 4 has none, so it finds nothing) */
@@ -98,27 +156,19 @@ int plat_cpus(int* ids, int max){ int n=(int)GetActiveProcessorCount(ALL_PROCESS
 const char* plat_dl_error(void){ static char b[64]; snprintf(b,sizeof b,"error %lu",(unsigned long)GetLastError()); return b; }
 int plat_setenv(const char* name, const char* value){ char b[600]; snprintf(b,sizeof b,"%s=%s",name,value? value : ""); SetEnvironmentVariableA(name,value); return _putenv(b); }
 u32 plat_tid(void){ return (u32)GetCurrentThreadId(); }
-const char* snx_build_commit(void){ return "b5f4f14f2bfc"; }
-const char* snx_build_info(void){ return "ScarletNX renderer b5f4f14f2bfc in the SwitchRecomp runtime"; }
+const char* snx_build_commit(void){ return "3f15d931fb4b"; }
+const char* snx_build_info(void){ return "ScarletNX renderer 3f15d931fb4b in the SwitchRecomp runtime"; }
 char* snx_executable(const char* argv0){ (void)argv0; char b[1300]; snprintf(b,sizeof b,"%s%s.exe",g_exedir,g_exename); return _strdup(b); }
 char* snx_format(const char* fmt, ...){ va_list a; va_start(a,fmt); int n=vsnprintf(NULL,0,fmt,a); va_end(a); if(n<0) return NULL;
   char* p=malloc((size_t)n+1); if(!p) return NULL; va_start(a,fmt); vsnprintf(p,(size_t)n+1,fmt,a); va_end(a); return p; }
 char* snx_os_error(char* out, size_t size){ DWORD e=GetLastError(); if(!FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM|FORMAT_MESSAGE_IGNORE_INSERTS,NULL,e,0,out,(DWORD)size,NULL)) snprintf(out,size,"error %lu",(unsigned long)e);
   size_t n=strlen(out); while(n && (out[n-1]=='\r'||out[n-1]=='\n'||out[n-1]=='.')) out[--n]=0; return out; }
 /* ---- the ScarletNX side, renamed */
-typedef struct {   /* mirror of their Renderer (gpu/renderer.h, ScarletNX main b5f4f14f2bfc), same order */
-  const char* name; int (*start)(void); void (*mem_may_have_changed)(void);
-  void* clear; void* draw; void* method_barrier; void* draw_texture; void* blit; void* vic_compose;
-  void* nvdec_write; void* nvdec_hw_device; void* dma_copy; void* blit_mem;
-  void (*rt_flush)(u64); void (*rt_reload)(u64); void* dispatch; void* cs_mem_need; void* mem_pending; void* gfx_mem_need;
-  void* before_syncwait; void* stream_incr; void* release_write; void* release_need; void* release_read; void* release_value;
-  void* render_predicate; void* render_predicate_drop;
-  void* samples_reset; void* samples_enable; void* samples_report; void* stream_end; void* release_retire; void* report_stall;
-  void (*present_buffer)(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4], u32 transform);
-  u64 (*screenshot)(const char* path); void (*refresh)(void); void (*save)(int at_exit); int (*release_window)(void);
-  void* prepare;
-} SnxRenderer;
-extern const SnxRenderer snxv_vk_renderer;
+/* their renderer interface as plain functions (snxvk/src_new/nx/gpu/vk/swr_glue.c), so no struct layout is mirrored */
+extern int snxv_swr_vk_start(void);
+extern void snxv_swr_vk_present(u64 cpu_addr, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt, const i32 crop[4], u32 transform);
+extern u64 snxv_swr_vk_screenshot(const char* path);
+extern void snxv_swr_vk_save(int at_exit);
 extern void snxv_gpu_init(void);
 extern void snxv_gpu_submit(const void* entries, u32 n, u32 channel, u32 incs, u32 wait_id, u32 wait_val, u32 expect);
 extern void snxv_gpu_kick(void);
@@ -154,12 +204,15 @@ int snxvk_start(void){
     int rec= !(snxvk_dlss_mode>0 || g_opt_hdr) && !getenv("SWR_SNXVK_NO_RECORD_THREAD");
     snxv_swr_settings_set(g_opt_resf,g_opt_shadows,snxvk_opt_vsync,g_opt_aniso,rec);
     LOG("vulkan_native: command recording thread %s\n",rec? "on" : "off (DLSS or HDR output records directly)");
-    /* prebuild_shaders: the game's shaders translated in the background at start, and the pipeline recipes made from
-       them (pipeline.c rc_merge); SWR_VK_NO_PREPARE=1 = off (tests) */
+    /* prebuild_shaders: the shipped-shader pass, the game's system/shd shaders translated in the background at start
+       (Metroid Prime 4 has none); SWR_VK_NO_PREPARE=1 = off (tests) */
     { extern void snxv_swr_settings_prepare(int); extern int g_opt_prebuild;
       int prep= g_opt_prebuild && !getenv("SWR_VK_NO_PREPARE"); snxv_swr_settings_prepare(prep);
-      if(prep) LOG("vulkan_native: the game's shaders are translated in the background, then the pipeline recipes made\n"); } }   /* FIFO only with forced_vsync=1, like the GL path: otherwise mailbox, paced by snxvk_present (FIFO at 144/240 FPS on a 239 Hz screen lost frames to vblank waits) */
-  if(!snxv_vk_renderer.start()){ WARN("vulkan_native: Vulkan 1.3 renderer could not start (see above): using OpenGL\n");
+      if(prep) LOG("vulkan_native: the game's shaders are translated in the background when the game ships them\n"); }
+    /* profile=1: the GPU's own time per rendering pass too (timestamps, "vulkan: GPU" lines every 10 s), so a slow
+       scene shows whether the GPU or the threads feeding it are the limit */
+    { extern void snxv_swr_settings_gpu_profile(int); extern int g_opt_prof; snxv_swr_settings_gpu_profile(g_opt_prof); } }   /* FIFO only with forced_vsync=1, like the GL path: otherwise mailbox, paced by snxvk_present (FIFO at 144/240 FPS on a 239 Hz screen lost frames to vblank waits) */
+  if(!snxv_swr_vk_start()){ WARN("vulkan_native: Vulkan 1.3 renderer could not start (see above): using OpenGL\n");
     /* the guest memory was set up with write tracking for Vulkan; OpenGL would scan it on every submit (measured 19 FPS,
        GPU thread 98% busy) - it runs without, as when OpenGL is chosen */
     g_ww_ok=0; return 0; }
@@ -225,18 +278,18 @@ void snxvk_present(u64 a, u32 w, u32 h, u32 pitch, u32 layout, u32 bhl, u32 fmt)
   /* the game's flip from QueueBuffer (svc_vi.c), as the OpenGL output applies it: Metroid Prime 4 asks for FlipV (2) on
      every frame, and passing 0 showed it upside down */
   extern volatile u32 g_vi_transform; u32 transform=g_vi_transform&3;
-  { static u64 last_in; u64 t0=plat_ns(); snxv_vk_renderer.present_buffer(a,w,h,pitch,layout,bhl,fmt,crop,transform); u64 t1=plat_ns();
+  { static u64 last_in; u64 t0=plat_ns(); snxv_swr_vk_present(a,w,h,pitch,layout,bhl,fmt,crop,transform); u64 t1=plat_ns();
     static int tr=-1; if(tr<0) tr=getenv("SWR_SNXVK_TRACE")!=NULL;
     if(t1-t0>250000000ull) LOG("vulkan_native: present_buffer took %.0f ms\n",(t1-t0)/1e6);
     if(tr && last_in && (t0-last_in>30000000ull || t1-t0>12000000ull)) LOG("vulkan_native: slow frame: game arrived %.1f ms after the last present, present took %.1f ms\n",(t0-last_in)/1e6,(t1-t0)/1e6);
     if(tr && last_out){ st_n++; st_wait+=t_w-t_in; st_pres+=t1-t0; st_gap+=t_in-last_out;
       if(st_n==600){ LOG("vulkan_native: per frame: game work %.2f ms, deadline wait %.2f ms, present call %.2f ms\n",st_gap/6e8,st_wait/6e8,st_pres/6e8); st_n=st_wait=st_pres=st_gap=0; } }
     last_out=t1; last_in=t1; } }
-u64 snxvk_screenshot(const char* path){ return g_snxvk_on && snxv_vk_renderer.screenshot? snxv_vk_renderer.screenshot(path) : 0; }
+u64 snxvk_screenshot(const char* path){ return g_snxvk_on? snxv_swr_vk_screenshot(path) : 0; }
 void snxvk_tick(int tick){   /* frontend loop, 60 Hz */
   if(!g_snxvk_on) return;
-  if(tick%300==0 && snxv_vk_renderer.save) snxv_vk_renderer.save(0); }   /* it writes after a quiet stretch */
-void snxvk_exit(void){ if(g_snxvk_on && snxv_vk_renderer.save) snxv_vk_renderer.save(1); }
+  if(tick%300==0) snxv_swr_vk_save(0); }   /* it writes after a quiet stretch */
+void snxvk_exit(void){ if(g_snxvk_on) snxv_swr_vk_save(1); }
 
 #else   /* built without the library: the option is ignored */
 void snxvk_ini(const char* v){ if(!strcmp(v,"vulkan_native")) WARN("renderer=vulkan_native: this build has no native Vulkan renderer (runtime/snxvk/libsnxvk.a): using OpenGL\n"); }

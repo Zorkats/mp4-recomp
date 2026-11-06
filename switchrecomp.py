@@ -320,10 +320,10 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     if overlay: srcs += [os.path.join(RT, 'beyond_ui', f) for f in ('ui.cpp', 'ov.cpp') + (('fe.cpp', 'fe_sys_linux.cpp', 'fe_update_linux.cpp') if lx_frontend else ('stub_fe.c',))] + [os.path.join(RT, 'imgui', 'src', f) for f in ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_opengl3.cpp')]
     elif gl and not frontend: srcs += [os.path.join(RT, 'beyond_ui', 'stub.c')]
     # renderer=vulkan_native: ScarletNX's GPU front end + Vulkan renderer (GPL-3.0), prebuilt by work-profiler/build_snxvk.py
-    snxvk = os.path.join(RT, 'snxvk', 'libsnxvk_new_nodlss.a' if release else 'libsnxvk_new.a')   # ScarletNX main b5f4f14 (work-profiler/build_snxvk2.py)
+    snxvk = os.path.join(RT, 'snxvk', 'libsnxvk_new_nodlss.a' if release else 'libsnxvk_new.a')   # ScarletNX main 3f15d931 (work-profiler/build_snxvk2.py)
     if os.environ.get('SWR_SNXVK_LIB'): snxvk = os.path.join(RT, 'snxvk', os.environ['SWR_SNXVK_LIB'])   # e.g. libsnxvk_new.a (re-vendor tests)
     snxvk = snxvk if os.path.isfile(snxvk) and target_win and backend == 'win32' and not os.environ.get('SWR_NO_SNXVK') else None
-    cmd = [cc, '-O' + opt, '-w', '-fno-strict-aliasing', '-Wl,-S', '-I', RT, '-I', os.path.join(RT, 'bcn'), '-I', os.path.join(RT, 'spvc'), '-I', os.path.join(RT, 'oh264', 'include'), '-I', os.path.join(RT, 'vp9', 'include'), '-I', os.path.join(RT, 'snxvk', 'deps', 'Vulkan-Headers-1.4.365', 'include')] + srcs + ['-o', out]
+    cmd = [cc, '-O' + opt, '-w', '-fno-strict-aliasing', '-Wl,-S', '-I', RT, '-I', os.path.join(RT, 'bcn'), '-I', os.path.join(RT, 'spvc'), '-I', os.path.join(RT, 'oh264', 'include'), '-I', os.path.join(RT, 'vp9', 'include'), '-I', os.path.join(RT, 'snxvk', 'deps', 'Vulkan-Headers-1.4.367', 'include')] + srcs + ['-o', out]
     # Linux without the static OpenH264 (linux/build_openh264.sh): the system's libopenh264.so, loaded at first use
     h264_dl = not h264 and not target_win and backend in ('x11', 'headless')
     if h264_dl: cmd += ['-DSWR_H264_DLOPEN']
@@ -347,6 +347,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     if target_win:
         cmd += ['-static', '-lgdi32', '-lwinmm', '-luser32', '-lopengl32', '-lcomdlg32', '-lshell32', '-mwindows' if backend == 'win32' else '-mconsole']
         if backend == 'win32': cmd += ['-lmfplat', '-lmfreadwrite', '-lmfuuid', '-lole32']
+        if snxvk: cmd += ['-lpthread']   # winpthread, statically: the renderer's pthread mutexes and rwlocks
         if frontend: cmd += ['-ld3d11', '-ldxgi', '-ld3dcompiler', '-ldwmapi', '-luuid', '-loleaut32', '-lurlmon', '-lwinhttp', '-lbcrypt']
     else:
         cmd += ['-lpthread', '-ldl', '-lm', '-rdynamic']

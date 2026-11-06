@@ -14,6 +14,7 @@
 #endif
 #include <mutex>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -44,6 +45,9 @@ extern int g_frames;
 int cheats_count(void); int cheats_info(int i, char* name, int cap, int* on, int* master); void cheats_set(int i, int on);
 const char* cheats_path(void); void cheats_reload(void); int fov_available(void);
 void logf_(int lvl, const char* f, ...);
+int kbm_action_count(void); const char* kbm_action_key(int i); const char* kbm_action_label(int i); const char* kbm_action_default(int i);
+void kbm_binding_get(int i, char* out, int cap);
+void kbm_capture_begin(void); void kbm_capture_cancel(void); int kbm_capture_take(char* out, int cap);
 }
 using namespace ui;
 
@@ -115,6 +119,91 @@ void opt_row(const char* key) {
     } }
 }
 
+// ---- keyboard bindings (input_kbm.c): a row per Switch button; selecting it waits for a key, which is added to that
+// button or, if the button already has it, taken off. A key added here leaves any other button it was on
+int g_cap_action = -1; double g_cap_t0; std::string g_bind_note;
+
+std::vector<std::string> chord_list(const std::string& v) {
+    std::vector<std::string> out; size_t i = 0;
+    while (i <= v.size()) {
+        size_t e = v.find(',', i); if (e == std::string::npos) e = v.size();
+        std::string t = v.substr(i, e - i); size_t a = t.find_first_not_of(" \t"), b = t.find_last_not_of(" \t");
+        if (a != std::string::npos) { t = t.substr(a, b - a + 1); if (t != "-") out.push_back(t); }
+        i = e + 1;
+    }
+    return out;
+}
+std::string chord_join(const std::vector<std::string>& l) {
+    std::string s; for (auto& c : l) { if (!s.empty()) s += ", "; s += c; }
+    return s.empty() ? "-" : s;
+}
+bool chord_eq(const std::string& a, const std::string& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); i++) if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[i])) return false;
+    return true;
+}
+std::string binding(int i) {
+    auto it = g_vals.find(kbm_action_key(i)); if (it != g_vals.end()) return it->second;
+    char b[128]; kbm_binding_get(i, b, sizeof b); return b;
+}
+void binding_toggle(int action, const std::string& chord) {
+    std::vector<std::string> l = chord_list(binding(action));
+    auto has = std::find_if(l.begin(), l.end(), [&](const std::string& c) { return chord_eq(c, chord); });
+    if (has != l.end()) { l.erase(has); change(kbm_action_key(action), chord_join(l)); g_bind_note = chord + " taken off " + kbm_action_label(action); return; }
+    g_bind_note = chord + " now presses " + kbm_action_label(action);
+    for (int j = 0; j < kbm_action_count(); j++) {
+        if (j == action) continue;
+        std::vector<std::string> o = chord_list(binding(j));
+        auto it = std::find_if(o.begin(), o.end(), [&](const std::string& c) { return chord_eq(c, chord); });
+        if (it == o.end()) continue;
+        o.erase(it); change(kbm_action_key(j), chord_join(o)); g_bind_note += std::string(" (moved from ") + kbm_action_label(j) + ")";
+    }
+    l.push_back(chord); change(kbm_action_key(action), chord_join(l));
+}
+void capture_cancel() { if (g_cap_action >= 0) kbm_capture_cancel(); g_cap_action = -1; }
+void capture_poll(double t) {   // each menu frame
+    if (g_cap_action < 0) return;
+    char c[64];
+    if (kbm_capture_take(c, sizeof c)) { int a = g_cap_action; g_cap_action = -1; if (c[0]) binding_toggle(a, c); }
+    else if (t - g_cap_t0 > 8) { capture_cancel(); g_bind_note = "No key pressed: nothing changed"; }
+}
+
+// [Input] mouse_buttons: left, right, middle, back, forward as Switch buttons (input_kbm.c mouse_map)
+const char* const MOUSE_ROWS[] = {"Left mouse button", "Right mouse button", "Middle mouse button", "Back mouse button", "Forward mouse button"};
+const Choice MOUSE_TARGETS[] = {{"-", "None"}, {"a", "A"}, {"b", "B"}, {"x", "X"}, {"y", "Y"}, {"l", "L"}, {"r", "R"}, {"zl", "ZL"}, {"zr", "ZR"},
+                                {"plus", "+"}, {"minus", "-"}, {"lstick", "Left stick click"}, {"rstick", "Right stick click"}};
+void mouse_rows() {
+    std::vector<std::string> cur = chord_list(val("mouse_buttons")); cur.resize(5, "-");
+    std::vector<std::string> items; for (auto& c : MOUSE_TARGETS) items.push_back(c.label);
+    for (int i = 0; i < 5; i++) {
+        int idx = 0; for (int j = 0; j < (int)items.size(); j++) if (chord_eq(cur[i], MOUSE_TARGETS[j].value)) idx = j;
+        if (row_choice(fmt("##mb%d", i).c_str(), MOUSE_ROWS[i], &idx, items)) {
+            cur[i] = MOUSE_TARGETS[idx].value; std::string v; for (int k = 0; k < 5; k++) { if (k) v += ","; v += cur[k]; }
+            change("mouse_buttons", v);
+        }
+    }
+}
+
+void keyboard_rows() {
+    for (int i = 0; i < kbm_action_count(); i++) {
+        if (i == 12) section("KEYBOARD: D-PAD AND STICKS");
+        bool waiting = g_cap_action == i;
+        std::string v = waiting ? "PRESS A KEY (ESC CANCELS)" : chord_join(chord_list(binding(i)));
+        if (v == "-") v = "NONE";
+        if (row_button(fmt("##kb%d", i).c_str(), kbm_action_label(i), v.c_str(), waiting)) {
+            if (waiting) capture_cancel();
+            else { capture_cancel(); g_cap_action = i; g_cap_t0 = ImGui::GetTime(); kbm_capture_begin(); g_bind_note.clear(); }
+        }
+    }
+    if (row_button("##kbreset", "Keyboard and mouse buttons back to the defaults", "RESET")) {
+        capture_cancel();
+        for (int i = 0; i < kbm_action_count(); i++) change(kbm_action_key(i), kbm_action_default(i));
+        change("mouse_buttons", "a,zl,r,-,-"); g_bind_note = "Keyboard and mouse buttons reset";
+    }
+    help_text(g_bind_note.empty() ? "Select a button, then press the key for it (Shift, Ctrl or Alt held with it make a chord). Pressing a key the button "
+                                    "already has takes it off. Esc, F1-F12 stay with the game window." : g_bind_note.c_str());
+}
+
 void tab_content(int t) {
     switch (t) {
     case 0: section("PICTURE"); opt_row("resolution"); opt_row("fullscreen"); opt_row("dynamic_resolution"); if (val("dynamic_resolution") == "1") opt_row("dynamic_resolution_min");
@@ -137,14 +226,14 @@ void tab_content(int t) {
         help_text("Cheats that change game data work; cheats that patch game code (ARM instructions) do nothing, the code is recompiled.");
         break; }
     case 4: section("OUTPUT"); opt_row("volume"); section("COMPATIBILITY"); opt_row("audio_surround_downmix"); break;
-    case 5: section("MOUSE"); opt_row("mouse_look"); opt_row("mouse_sensitivity"); opt_row("mouse_invert_y"); opt_row("mouse_deadzone");
+    case 5: section("KEYBOARD: BUTTONS"); keyboard_rows();
+            section("MOUSE"); opt_row("mouse_look"); opt_row("mouse_sensitivity"); opt_row("mouse_invert_y"); opt_row("mouse_deadzone"); mouse_rows();
             section("CONTROLLER"); opt_row("button_icons"); opt_row("stick_deadzone"); opt_row("rumble"); opt_row("menu_shortcut"); opt_row("controller_api");
             help_text("Button mapping and menu buttons are on the Play screen's Controls page."); break;
     default: {
         section("KEYS");
         const char* kb[][2] = {{"Menu", "F1"}, {"Screenshot", "F3 (F8: full resolution PNG)"}, {"Record video", "F7"}, {"Fullscreen", "F11 or Alt+Enter"},
-                               {"Fast forward (if on)", "Tab, or L3 + R3"}, {"Quit", "Esc"}, {"Move / aim", "W A S D / I J K L"}, {"A B X Y", "X  Z  C  V"},
-                               {"L R ZL ZR", "Q  E  1  3"}, {"+ / -", "Enter / Backspace"}};
+                               {"Fast forward (if on)", "Tab, or L3 + R3"}, {"Quit", "Esc"}, {"Game buttons", "Controls tab (PrimeHack-style by default)"}};
         for (auto& r : kb) row_text(r[0], r[1]);
         section("ABOUT"); help_text("Metroid Prime 4 Recomp: Metroid Prime 4 Beyond recompiled for PC. SwitchRecomp by MZ Labs; Native Vulkan by ScarletNX; Dear ImGui; SDL2. Full credits on the Play screen.");
     } }
@@ -215,6 +304,7 @@ void snapshot_settings() {   // main thread
     bindings_from_string(settings_get("launcher_bindings", "1,0,6,7,10"), g_q.bind);
     g_q.nav_on = strcmp(settings_get("launcher_nav", "1"), "0") != 0; g_q.prompts = prompt_style_from(settings_get("launcher_prompts", "auto"));
     g_q.renderer = settings_get("renderer", "opengl");
+    g_q.vals["mouse_buttons"] = settings_get("mouse_buttons", "a,zl,r,-,-");
 }
 } // namespace
 
@@ -312,7 +402,7 @@ static bool menu_frame(int w, int h) {
         if (open && g_vals.empty()) g_vals = g_q.vals;
     }
     static bool was_open, need_theme;
-    if (!open) { if (was_open) { was_open = false; g_vals.clear(); g_rev.active = false; g_quit_confirm = false; } return false; }
+    if (!open) { if (was_open) { was_open = false; g_vals.clear(); g_rev.active = false; g_quit_confirm = false; capture_cancel(); g_bind_note.clear(); } return false; }
     if (!was_open) { was_open = true; need_theme = true; g_t_open = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0; g_tab_changed = true; { Lock k; g_vals = g_q.vals; } }
     if (!g_ready) {
         IMGUI_CHECKVERSION(); ImGui::CreateContext(); ImGuiIO& io = ImGui::GetIO();
@@ -342,7 +432,7 @@ static bool menu_frame(int w, int h) {
             if (key != ImGuiKey_None) io.AddKeyEvent(key, e.b != 0); break; }
         case 1: io.AddInputCharacter((unsigned)e.a); break;
         case 2: io.AddMousePosEvent(e.x, e.y); break;
-        case 3: io.AddMouseButtonEvent(e.a, e.b != 0); break;
+        case 3: if (e.b && g_cap_action >= 0) capture_cancel(); io.AddMouseButtonEvent(e.a, e.b != 0); break;
         case 4: io.AddMouseWheelEvent(0, e.y); break;
         }
     }
@@ -353,6 +443,8 @@ static bool menu_frame(int w, int h) {
     g_row.pad_left = left || ImGui::IsKeyPressed(ImGuiKey_LeftArrow); g_row.pad_right = right || ImGui::IsKeyPressed(ImGuiKey_RightArrow); g_row.confirm = act[NAV_CONFIRM];
     if (g_rev.active && act[NAV_CONFIRM]) { g_rev.active = false; g_row.confirm = false; }   // "Keep these display settings?": confirm keeps
     bool close = act[NAV_BACK] || ImGui::IsKeyPressed(ImGuiKey_Escape);
+    capture_poll(ImGui::GetTime());
+    if (close && g_cap_action >= 0) { capture_cancel(); close = false; g_bind_note = "Cancelled: nothing changed"; }
     if (close) { if (g_rev.active) revert_display(); else { Lock k; g_q.open = false; } }
     if (act[NAV_PREV] || ImGui::IsKeyPressed(ImGuiKey_PageUp)) { g_tab = (g_tab + NTABS - 1) % NTABS; g_tab_changed = true; }
     if (act[NAV_NEXT] || ImGui::IsKeyPressed(ImGuiKey_PageDown)) { g_tab = (g_tab + 1) % NTABS; g_tab_changed = true; }

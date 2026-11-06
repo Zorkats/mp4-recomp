@@ -235,10 +235,22 @@ void backend_window_size(int* w, int* h){ *w=g_ww; *h=g_wh; }
 
 void video_present_rgba(const u32* px, int w, int h, int stride){ extern void gpu_gl_present_cpu(const u32*,int,int,int); gpu_gl_present_cpu(px,w,h,stride); }
 
-/* keysyms (unshifted) -> input_kbm.c key codes, which its table maps to the controller as on Windows */
-static int kbm_from_keysym(KeySym k){
+/* key events -> input_kbm.c key codes, which its [Input] key_* bindings map to the controller as on Windows.
+   Letters and digits follow the layout (the unshifted keysym); the keypad and the punctuation keys go by the key's
+   place (its evdev keycode, scan code + 8), punctuation named as on a US keyboard, since layouts put different
+   characters there */
+static int kbm_from_xkey(KeySym k, unsigned code){
+  static const struct { unsigned char code; short key; } BY_PLACE[] = {
+    {49, KBM_KEY_GRAVE}, {20, KBM_KEY_DASH}, {21, KBM_KEY_EQUALS}, {34, KBM_KEY_LBRACKET}, {35, KBM_KEY_RBRACKET},
+    {51, KBM_KEY_BACKSLASH}, {47, KBM_KEY_SEMICOLON}, {48, KBM_KEY_APOSTROPHE}, {59, KBM_KEY_COMMA}, {60, KBM_KEY_PERIOD},
+    {61, KBM_KEY_SLASH}, {90, KBM_KEY_NUM0}, {87, KBM_KEY_NUM0+1}, {88, KBM_KEY_NUM0+2}, {89, KBM_KEY_NUM0+3},
+    {83, KBM_KEY_NUM0+4}, {84, KBM_KEY_NUM0+5}, {85, KBM_KEY_NUM0+6}, {79, KBM_KEY_NUM0+7}, {80, KBM_KEY_NUM0+8},
+    {81, KBM_KEY_NUM0+9}, {86, KBM_KEY_NUM_ADD}, {82, KBM_KEY_NUM_SUB}, {63, KBM_KEY_NUM_MUL}, {106, KBM_KEY_NUM_DIV},
+    {91, KBM_KEY_NUM_DECIMAL},
+  };
   if(k>=XK_a && k<=XK_z) return 'A'+(int)(k-XK_a);
-  if(k>=XK_0 && k<=XK_9) return '0'+(int)(k-XK_0);
+  if(code>=10 && code<=19) return code==19? '0' : '1'+(int)(code-10);   /* the number row by place: AZERTY's unshifted row is & e " ... */
+  for(size_t i=0;i<sizeof BY_PLACE/sizeof *BY_PLACE;i++) if(BY_PLACE[i].code==code) return BY_PLACE[i].key;
   switch(k){
     case XK_space: return KBM_KEY_SPACE;
     case XK_Return: case XK_KP_Enter: return KBM_KEY_ENTER;
@@ -247,6 +259,17 @@ static int kbm_from_keysym(KeySym k){
     case XK_Up: return KBM_KEY_UP;
     case XK_Right: return KBM_KEY_RIGHT;
     case XK_Down: return KBM_KEY_DOWN;
+    case XK_Tab: case XK_ISO_Left_Tab: return KBM_KEY_TAB;
+    case XK_Shift_L: case XK_Shift_R: return KBM_KEY_SHIFT;
+    case XK_Control_L: case XK_Control_R: return KBM_KEY_CTRL;
+    case XK_Alt_L: case XK_Alt_R: case XK_Meta_L: case XK_Meta_R: return KBM_KEY_ALT;
+    case XK_Caps_Lock: return KBM_KEY_CAPSLOCK;
+    case XK_Insert: return KBM_KEY_INSERT;
+    case XK_Delete: return KBM_KEY_DELETE;
+    case XK_Home: return KBM_KEY_HOME;
+    case XK_End: return KBM_KEY_END;
+    case XK_Prior: return KBM_KEY_PAGEUP;
+    case XK_Next: return KBM_KEY_PAGEDOWN;
   }
   return KBM_KEY_NONE; }
 
@@ -315,6 +338,7 @@ static void key_down(XKeyEvent* e){
   KeySym k=XLookupKeysym(e,0);
   int once=key_once(k,1);
   if(k==XK_F1){ if(once) ov_input_toggle(); return; }
+  if(kbm_capture_key(kbm_from_xkey(k,e->keycode),1)) return;   /* the menu's press-a-key rebinding takes it first */
   if(ov_is_open() && k!=XK_F11){ ov_input_key(ovk_from_keysym(k),1);
     { char c[8]; KeySym ks; int n=XLookupString(e,c,sizeof c,&ks,NULL); if(n==1 && (unsigned char)c[0]>=32) ov_input_char((unsigned char)c[0]); }
     return; }
@@ -332,7 +356,7 @@ static void key_down(XKeyEvent* e){
     case XK_F4: if(once){ g_opt_fps= g_opt_fps==0? 1 : 0; char t[300]; snprintf(t,sizeof t,"%s  |  FPS limit: %s",g_title,g_opt_fps==0? "unlimited" : "60"); set_title(t);
         extern void ini_set(const char*, const char*); char v[8]; snprintf(v,sizeof v,"%d",g_opt_fps); ini_set("fps_limit",v); } return;
   }
-  kbm_key(kbm_from_keysym(k),1); }
+  kbm_key(kbm_from_xkey(k,e->keycode),1); }
 
 /* Test-only frame-indexed replay, as backend_win32.c has it (the same route files run on both): SWR_TEST_SCRIPT CSV
    guest_frame,hex_buttons,lx,ly,rx,ry, held until the next row; SWR_TEST_SETENV=FRAME:NAME=VALUE; captures at
@@ -372,7 +396,8 @@ void video_poll(void){
   cursor_sync();
   while(XPending(dpy)){ XEvent e; XNextEvent(dpy,&e);
     if(e.type==KeyPress) key_down(&e.xkey);
-    else if(e.type==KeyRelease){ KeySym k=XLookupKeysym(&e.xkey,0); key_once(k,0); kbm_key(kbm_from_keysym(k),0); if(ov_is_open()) ov_input_key(ovk_from_keysym(k),0); }
+    else if(e.type==KeyRelease){ KeySym k=XLookupKeysym(&e.xkey,0); int kk=kbm_from_xkey(k,e.xkey.keycode); key_once(k,0); kbm_key(kk,0);
+      if(!kbm_capture_key(kk,0) && ov_is_open()) ov_input_key(ovk_from_keysym(k),0); }
     else if(e.type==MotionNotify) mouse_motion(e.xmotion.x,e.xmotion.y);
     else if(e.type==ButtonPress || e.type==ButtonRelease){ unsigned bt=e.xbutton.button; int down= e.type==ButtonPress;
       kbm_mouse_button(kbm_from_xbutton(bt),down);   /* the game ignores it while the menu is open (kbm_mouse) */

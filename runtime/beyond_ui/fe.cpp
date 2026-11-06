@@ -632,11 +632,14 @@ static void page_controls() {
               else { memcpy(g_nav.bind, b, sizeof b); flash("Two actions share a button: pick a different one (not saved until each action has its own)"); } }
     if (row_button("##nr", "Reset menu buttons", "RESET")) { for (int i = 0; i < NAV_COUNT; i++) g_nav.bind[i] = NAV_DEFAULT[i]; set("launcher_bindings", bindings_to_string(g_nav.bind)); flash("Menu buttons reset"); }
     help_text("Locked out? Hold + and - together for 3 seconds on any screen, or use the keyboard (arrows, Enter, Esc) or the mouse.");
-    section("KEYBOARD (BUILT IN)");
-    const char* kb[][2] = {{"D-pad", "Arrow keys"}, {"Left stick", "W A S D"}, {"Right stick", "I J K L"}, {"A", "X or Space"}, {"B (jump)", "Z"}, {"X", "C"}, {"Y", "V"},
-                           {"L / R", "Q / E"}, {"ZL / ZR", "1 / 3"}, {"+ (pause) / - (map)", "Enter / Backspace"}, {"Menu", "F1"}, {"Screenshot", "F3 (F8 full resolution)"},
-                           {"Record video", "F7"}, {"Fullscreen", "F11 or Alt+Enter"}, {"Fast forward", "Tab"}, {"Quit", "Esc"},
-                           {"Free aim (L)", "Hold right mouse button, move the mouse"}, {"Shoot (Y)", "Left mouse button"}, {"Missiles (R)", "Middle mouse button"}};
+    section("KEYBOARD AND MOUSE (DEFAULTS)");
+    help_text("PrimeHack-style. In game, F1 > Controls changes any of them (or key_* and mouse_buttons in the .ini).");
+    const char* kb[][2] = {{"Move", "W A S D or arrow keys"}, {"Camera", "Mouse (I J K L)"}, {"Fire, charge, interact (A)", "Left mouse button or Enter"},
+                           {"Lock on, grapple, scan (ZL)", "Right mouse button or Shift"}, {"Secondary weapon (R)", "Middle mouse button or F"},
+                           {"Jump, dodge (B)", "Space"}, {"Morph ball (Y)", "Ctrl"}, {"Visors, spring ball (X)", "E or Alt"}, {"L", "Q"},
+                           {"D-pad weapons (right, left, up, down)", "1  2  3  4"}, {"+ (Vi-O-La)", "R"}, {"- (pause)", "Tab or `"}, {"Menu", "F1"},
+                           {"Screenshot", "F3 (F8 full resolution)"}, {"Record video", "F7"}, {"Fullscreen", "F11 or Alt+Enter"},
+                           {"Fast forward (if on)", "Tab"}, {"Quit", "Esc"}};
     for (auto& r : kb) row_text(r[0], r[1]);
 }
 

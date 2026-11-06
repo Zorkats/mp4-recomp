@@ -27,7 +27,7 @@ static int g_mouse_down;
 /* mouse look holds the cursor in the window: the input thread asks (WM_APP+12), the window thread clips */
 static int g_cursor_clipped;
 #define PAD_HOME (1ull<<30)   /* Home / Guide / PS: physical only, opens the in-game menu, never reaches the game */
-extern int g_opt_fps;
+extern int g_opt_fps, g_opt_ff;   /* main.c: fps_limit, fast_forward (Tab) */
 
 static int g_ls_mode=0; static char g_ls_path[1024];
 
@@ -206,20 +206,22 @@ void backend_rec_state(int on){ if(g_hwnd) PostMessageA(g_hwnd,WM_APP+8,(WPARAM)
 static const char* HELP=
   "Metroid Prime 4 Beyond - controls\n\n"
   "XInput (Xbox) controller: same as the Switch controller (A/B swapped by position).\n\n"
-  "Keyboard:\n"
-  "  Arrows = D-Pad     W A S D = Left stick    I J K L = Right stick\n"
-  "  X / Space = A    Z = B    C = X    V = Y\n"
-  "  Q = L   E = R   1 = ZL   3 = ZR   Enter = +   Backspace = -\n\n"
+  "Keyboard (PrimeHack-style; F1 > Controls or key_* in the .ini changes them):\n"
+  "  W A S D / arrows = move    Space = B (jump)    Ctrl = Y (morph)    Shift = ZL (lock on)\n"
+  "  E / Alt = X (visor)   F = R   Q = L   Enter = A   1 2 3 4 = D-pad weapons   R = +   Tab / ` = -\n\n"
   "Mouse (mouse_look=1; the menu or another window frees the cursor):\n"
-  "  Move = camera   Left = ZR   Right = ZL   Middle = R   (mouse_buttons in the .ini changes them)\n\n"
+  "  Move = camera   Left = A (fire)   Right = ZL   Middle = R   (mouse_buttons in the .ini changes them)\n\n"
   "F1 = menu   F3 = screenshot   F4 = FPS limit 60 / unlimited   F5 = diagnostic dump (trace)\n"
   "F7 = record .mp4 video (press F7 again to stop; saved in the recordings folder)\n"
   "F8 = instant full-resolution screenshot (PNG in the captures folder)\n"
   "F11 / Alt+Enter = fullscreen   Esc = quit";
 
-/* virtual keys -> input_kbm.c key codes (its table maps them to the controller) */
-static int kbm_from_vk(WPARAM k){
-  if((k>='A' && k<='Z') || (k>='0' && k<='9')) return (int)k;   /* VK codes of letters and digits are their ASCII */
+/* key messages -> input_kbm.c key codes (its [Input] key_* bindings map them to the controller). Letters and digits
+   follow the layout (their VK codes are their ASCII); punctuation goes by the key's place (its scan code), named as
+   on a US keyboard, since layouts put different characters there */
+static int kbm_from_vk(WPARAM k, LPARAM l){
+  if((k>='A' && k<='Z') || (k>='0' && k<='9')) return (int)k;
+  if(k>=VK_NUMPAD0 && k<=VK_NUMPAD9) return KBM_KEY_NUM0+(int)(k-VK_NUMPAD0);
   switch(k){
     case VK_SPACE: return KBM_KEY_SPACE;
     case VK_RETURN: return KBM_KEY_ENTER;
@@ -228,7 +230,37 @@ static int kbm_from_vk(WPARAM k){
     case VK_UP: return KBM_KEY_UP;
     case VK_RIGHT: return KBM_KEY_RIGHT;
     case VK_DOWN: return KBM_KEY_DOWN;
+    case VK_TAB: return KBM_KEY_TAB;
+    case VK_SHIFT: return KBM_KEY_SHIFT;
+    case VK_CONTROL: return KBM_KEY_CTRL;
+    case VK_MENU: return KBM_KEY_ALT;
+    case VK_CAPITAL: return KBM_KEY_CAPSLOCK;
+    case VK_INSERT: return KBM_KEY_INSERT;
+    case VK_DELETE: return KBM_KEY_DELETE;
+    case VK_HOME: return KBM_KEY_HOME;
+    case VK_END: return KBM_KEY_END;
+    case VK_PRIOR: return KBM_KEY_PAGEUP;
+    case VK_NEXT: return KBM_KEY_PAGEDOWN;
+    case VK_ADD: return KBM_KEY_NUM_ADD;
+    case VK_SUBTRACT: return KBM_KEY_NUM_SUB;
+    case VK_MULTIPLY: return KBM_KEY_NUM_MUL;
+    case VK_DIVIDE: return KBM_KEY_NUM_DIV;
+    case VK_DECIMAL: return KBM_KEY_NUM_DECIMAL;
   }
+  if(!(l & (1L<<24)))   /* not an extended key: the punctuation block, by scan code (PC set 1) */
+    switch((l>>16) & 0xFF){
+      case 0x29: return KBM_KEY_GRAVE;
+      case 0x0C: return KBM_KEY_DASH;
+      case 0x0D: return KBM_KEY_EQUALS;
+      case 0x1A: return KBM_KEY_LBRACKET;
+      case 0x1B: return KBM_KEY_RBRACKET;
+      case 0x2B: return KBM_KEY_BACKSLASH;
+      case 0x27: return KBM_KEY_SEMICOLON;
+      case 0x28: return KBM_KEY_APOSTROPHE;
+      case 0x33: return KBM_KEY_COMMA;
+      case 0x34: return KBM_KEY_PERIOD;
+      case 0x35: return KBM_KEY_SLASH;
+    }
   return KBM_KEY_NONE; }
 
 /* mouse look: hold the cursor inside the client area (Windows drops the clip when the window loses focus or moves) */
@@ -245,6 +277,8 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
   if(m==WM_SIZE){ g_ww=LOWORD(l); g_wh=HIWORD(l); if(g_ww<1) g_ww=1; if(g_wh<1) g_wh=1; }
   if(g_fe_mode){ long long r=0; if(fe_wndproc(h,m,w,l,&r)) return (LRESULT)r; return DefWindowProcA(h,m,w,l); }
   if(m==WM_APP+11){ set_fullscreen((int)w); return 0; }
+  /* the in-game menu's press-a-key rebinding sees keys first, so the key being bound doesn't also act in the menu */
+  if((m==WM_KEYDOWN||m==WM_SYSKEYDOWN||m==WM_KEYUP||m==WM_SYSKEYUP) && kbm_capture_key(kbm_from_vk(w,l),m==WM_KEYDOWN||m==WM_SYSKEYDOWN)) return 0;
   if(!(m==WM_KEYDOWN && w==VK_F11) && !(m==WM_SYSKEYDOWN && w==VK_RETURN) && ov_wndproc(h,m,w,l)) return 0;
   switch(m){
   case WM_CLOSE: LOG("window: closed by the user or the system\n"); g_quit=1; return 0;
@@ -264,15 +298,15 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
     if(0){ MessageBoxA(h,HELP,"Metroid Prime 4 Beyond",MB_OK); }
     if(w==VK_F3){ g_shot_req=1; return 0; }
     if(w==VK_F7){ g_rec_toggle=1; return 0; }
-    if(w==VK_TAB){ if(!(l & (1L<<30))){ extern volatile int g_ff_presses; g_ff_presses++; } return 0; }   /* fast forward toggle (fast_forward=1) */
+    if(w==VK_TAB && g_opt_ff){ if(!(l & (1L<<30))){ extern volatile int g_ff_presses; g_ff_presses++; } return 0; }   /* fast forward toggle (fast_forward=1); else a bindable key */
     if(w==VK_F8){ extern volatile int g_shot8_req; g_shot8_req=1; return 0; }
     if(w==VK_F5){ extern void gpu_gl_dump_rts(void); extern void kernel_dump_threads(void); extern __thread FILE* g_log_redirect;
       CreateDirectoryA("captures",NULL); FILE* f=fopen("captures/threads.txt","w");   /* written next to the trace */
       if(f){ g_log_redirect=f; kernel_dump_threads(); g_log_redirect=NULL; fclose(f); }
       kernel_dump_threads(); gpu_gl_dump_rts(); return 0; }
     if(w==VK_F4){ if(l & (1L<<30)) return 0; g_opt_fps= g_opt_fps==0? 1 : 0; char t[64]; snprintf(t,sizeof t,"FPS limit: %s",g_opt_fps==0? "unlimited" : "60"); SetWindowTextA(h,t); LOG("settings: F4 fps_limit=%d\n",g_opt_fps); { extern void ini_set(const char*, const char*); char v[8]; snprintf(v,sizeof v,"%d",g_opt_fps); ini_set("fps_limit",v); } return 0; }
-    kbm_key(kbm_from_vk(w),1); return 0;
-  case WM_SYSKEYUP: case WM_KEYUP: kbm_key(kbm_from_vk(w),0); return 0;
+    kbm_key(kbm_from_vk(w,l),1); return 0;
+  case WM_SYSKEYUP: case WM_KEYUP: kbm_key(kbm_from_vk(w,l),0); return 0;   /* also keeps a lone Alt from opening the window menu */
   case WM_KILLFOCUS: kbm_release_all(); g_mouse_down=0; cursor_clip(h,0); ReleaseCapture(); return 0;
   case WM_APP+12: cursor_clip(h,(int)w); return 0;   /* mouse look on / off, from video_poll */
   case WM_APP+8: { char t[300]; if(w) snprintf(t,sizeof t,"%s  |  RECORDING (F7 to stop)",g_title); else snprintf(t,sizeof t,"%s  |  Video saved in the recordings folder",g_title); SetWindowTextA(h,t); return 0; }

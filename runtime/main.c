@@ -6,6 +6,14 @@
    loop (window, input, vsync). */
 #include "rt.h"
 #include <sys/stat.h>
+#include "input_kbm.h"
+#define KBM_INI_HELP \
+  "; Keyboard: key_<button> = keys or chords, comma separated (key_x=E, Alt). A chord is keys held together,\n" \
+  ";   joined by + (key_y=Shift+1); - = none. Keys: A-Z 0-9 Space Enter Backspace Tab Grave (left of 1) Shift Ctrl\n" \
+  ";   Alt CapsLock Insert Delete Home End PageUp PageDown Up Down Left Right Dash Equals LBracket RBracket Backslash\n" \
+  ";   Semicolon Apostrophe Comma Period Slash Num0-Num9 NumAdd NumSub NumMul NumDiv NumDecimal. Punctuation keys go\n" \
+  ";   by their place on a US keyboard. Esc and F1-F12 stay with the game window (quit, menu, screenshots...); Tab is\n" \
+  ";   fast forward while fast_forward=1. The in-game menu (F1 > Controls) rebinds them by pressing the key\n"
 
 const SwrModule* g_mod;
 GuestFn* g_disp;
@@ -49,7 +57,7 @@ char g_opt_pad_map[128]="";   /* physical-position button remapping, empty = ide
 int g_opt_ctrl_api=0, g_opt_ctrl_index=0, g_opt_deadzone=7000;
 char g_opt_button_icons[16]="auto";
 int g_opt_mouse_look=1, g_opt_mouse_sens=100, g_opt_mouse_invert_y=0, g_opt_mouse_deadzone=15;   /* [Input] mouse look (input_kbm.c) */
-char g_opt_mouse_buttons[64]="zr,zl,r,-,-";   /* left, right, middle, back, forward -> Switch buttons */   /* [Input] button_icons: auto, switch, xbox, ps4, ps5 (svc_fs.c romfs_apply_mods) */   /* [Input]: api 0 auto, 1 SDL2, 2 XInput */
+char g_opt_mouse_buttons[64]="a,zl,r,-,-";   /* left, right, middle, back, forward -> Switch buttons */   /* [Input] button_icons: auto, switch, xbox, ps4, ps5 (svc_fs.c romfs_apply_mods) */   /* [Input]: api 0 auto, 1 SDL2, 2 XInput */
 int g_opt_diag=0;
 /* vsync: on by default off Windows. Without it the 60.00 FPS limiter beats against the display (59.95 Hz here): about once a
    second a frame came in the same refresh as the one before and the next refresh showed the old one again (59 of 3600
@@ -255,7 +263,7 @@ static const char* const INI_ALIAS[][2]={
 
 static const char* ini_norm(const char* k){ for(int i=0;INI_ALIAS[i][0];i++) if(!strcmp(k,INI_ALIAS[i][0])) return INI_ALIAS[i][1]; return k; }
 /* everything we read, so the rewrite keeps unknown keys */
-#define INI_MAXK 128
+#define INI_MAXK 256
 static char g_ini_k[INI_MAXK][64], g_ini_v[INI_MAXK][1024]; static int g_ini_n;
 
 static void ini_store(const char* k, const char* v){ for(int i=0;i<g_ini_n;i++) if(!strcmp(g_ini_k[i],k)){ strncpy(g_ini_v[i],v,1023); return; }
@@ -273,8 +281,9 @@ static void ini_apply(const char* k, const char* v){
     else if(!strcmp(k,"mouse_deadzone")){ g_opt_mouse_deadzone=atoi(v); if(g_opt_mouse_deadzone<0) g_opt_mouse_deadzone=0; if(g_opt_mouse_deadzone>50) g_opt_mouse_deadzone=50; }
     else if(!strcmp(k,"mouse_buttons")){
       /* the Metroid Dread layout (left Y, right L for its free aim) means nothing in a first-person game: the current default */
-      if(!strcmp(v,"y,l,r,-,-")){ v="zr,zl,r,-,-"; ini_store(k,v); }
+      if(!strcmp(v,"y,l,r,-,-")){ v="a,zl,r,-,-"; ini_store(k,v); }
       snprintf(g_opt_mouse_buttons,sizeof g_opt_mouse_buttons,"%s",v); extern void mouse_map_reset(void); mouse_map_reset(); }
+    else if(!strncmp(k,"key_",4) && kbm_binding_set(k,v)) {}   /* input_kbm.c keyboard bindings, live */
     else if(!strcmp(k,"button_icons")) snprintf(g_opt_button_icons,sizeof g_opt_button_icons,"%s",v);
     else if(!strcmp(k,"controller_api")) g_opt_ctrl_api= !strcmp(v,"sdl")? 1 : !strcmp(v,"xinput")? 2 : 0;
     else if(!strcmp(k,"controller_index")){ g_opt_ctrl_index=atoi(v); if(g_opt_ctrl_index<0) g_opt_ctrl_index=0; }
@@ -403,7 +412,7 @@ static const IniOpt INI_INPUT[]={
   {"mouse_sensitivity","100","mouse look: camera turn speed for the same mouse movement, in percent (10-1000)"},
   {"mouse_invert_y","0","1 = moving the mouse up looks down"},
   {"mouse_deadzone","15","mouse look: the smallest stick push any mouse movement makes, in percent (0-50). Raise it if slow\n;   mouse movement doesn't turn the camera, lower it if small movements turn it too far"},
-  {"mouse_buttons","zr,zl,r,-,-","mouse buttons left, right, middle, back, forward as Switch buttons: a b x y l r zl zr plus\n;   minus lstick rstick, - for none"},
+  {"mouse_buttons","a,zl,r,-,-","mouse buttons left, right, middle, back, forward as Switch buttons: a b x y l r zl zr plus\n;   minus lstick rstick, - for none"},
   {"button_icons","auto","the game's button pictures: auto = from the controller connected at start (Xbox and Steam Deck:\n;   Xbox icons, DualShock 4: PS4, DualSense: PS5, Switch or none: the originals), or switch, xbox, ps4, ps5.\n;   Needs the icon packs in Metroid Prime 4 Beyond_data\\mods (the Play screen downloads them: Controls > Button icons)"},
   {"controller_api","auto","auto = SDL2 when SDL2.dll is next to the game (Bluetooth/USB Switch Pro, DualShock 4,\n;   DualSense, 8BitDo, Xbox...), else XInput. sdl or xinput to force one"},
   {"controller_index","0","0 = first connected controller, 1.. = that controller (in connection order) is player 1"},
@@ -443,7 +452,7 @@ static char g_ini_path[1400]; static u64 g_ini_mtime;
 
 static u64 file_mtime(const char* p){ struct stat st; if(stat(p,&st)) return 0; return (u64)st.st_mtime; }
 
-static int ini_known(const char* k){ for(int s=0;INI_SECS[s].title;s++) for(const IniOpt* o=INI_SECS[s].o;o->key;o++) if(!strcmp(o->key,k)) return 1; return 0; }
+static int ini_known(const char* k){ if(kbm_action_find(k)>=0) return 1; for(int s=0;INI_SECS[s].title;s++) for(const IniOpt* o=INI_SECS[s].o;o->key;o++) if(!strcmp(o->key,k)) return 1; return 0; }
 
 void ini_write(void){
   if(!g_ini_path[0]) return;
@@ -457,7 +466,10 @@ void ini_write(void){
   fprintf(f,"; =====================================================================\n");
   for(int s=0;INI_SECS[s].title;s++){
     fprintf(f,"\n[%s]\n",INI_SECS[s].title);
-    for(const IniOpt* o=INI_SECS[s].o;o->key;o++) fprintf(f,"; %s\n%s=%s\n",o->help,o->key,ini_get(o->key,o->def)); }
+    for(const IniOpt* o=INI_SECS[s].o;o->key;o++) fprintf(f,"; %s\n%s=%s\n",o->help,o->key,ini_get(o->key,o->def));
+    if(INI_SECS[s].o==INI_INPUT){
+      fprintf(f,"%s",KBM_INI_HELP);
+      for(int i=0;i<kbm_action_count();i++){ char b[128]; kbm_binding_get(i,b,sizeof b); fprintf(f,"%s=%s\n",kbm_action_key(i),ini_get(kbm_action_key(i),b)); } } }
   int other=0; for(int i=0;i<g_ini_n;i++) if(!ini_known(g_ini_k[i])){ if(!other){ fprintf(f,"\n[Other]\n"); other=1; } fprintf(f,"%s=%s\n",g_ini_k[i],g_ini_v[i]); }
   fclose(f);
   remove(g_ini_path); if(rename(tmp,g_ini_path)) { remove(tmp); return; }
@@ -467,7 +479,12 @@ volatile int g_ini_dirty;
 
 void ini_set(const char* k, const char* v){ ini_store(k,v); g_ini_dirty=1; }
 
-void ini_open(const char* path){ strncpy(g_ini_path,path,sizeof g_ini_path-1); ini_load(path); ini_write(); }
+void ini_open(const char* path){ strncpy(g_ini_path,path,sizeof g_ini_path-1); ini_load(path);
+  /* first start with the rebindable keyboard (no key_* lines yet): the mouse moves from the old default (left ZR) to
+     the PrimeHack layout's left = A, as the keys do. Any other mouse_buttons value was chosen and stays */
+  if(!ini_get("key_a",NULL) && !strcmp(ini_get("mouse_buttons",""),"zr,zl,r,-,-")){
+    ini_store("mouse_buttons","a,zl,r,-,-"); ini_apply("mouse_buttons","a,zl,r,-,-"); LOG("settings: mouse_buttons moved to the new default a,zl,r,-,-\n"); }
+  ini_write(); }
 
 /* ini edited while running: reload and apply what we can live */
 void ini_poll(void){

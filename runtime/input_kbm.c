@@ -2,11 +2,13 @@
    Licensed under the Apache License 2.0. See LICENSE.txt and NOTICE.txt;
    any copy or derived work must keep the credit to SwitchRecomp by MZ Labs.
    Shared keyboard and mouse layer: Copyright 2026 Zorkats, same licence. */
-/* Keyboard and mouse as a Switch controller (input_kbm.h). The bindings and the mouse button parsing used to live in
-   backend_win32.c; the X11 backend had its own copy of the keyboard table and no game mouse. */
+/* Keyboard and mouse as a Switch controller (input_kbm.h): the [Input] key_* bindings with their PrimeHack-style
+   defaults, the press-a-key capture the in-game menu rebinds with, and mouse look with [Input] mouse_buttons. */
 #include "input_kbm.h"
 #include <ctype.h>
 #include <math.h>
+#include <stdio.h>
+#include <string.h>
 
 extern int g_opt_mouse_look, g_opt_mouse_sens, g_opt_mouse_invert_y, g_opt_mouse_deadzone;   /* main.c [Input] */
 extern char g_opt_mouse_buttons[];
@@ -15,23 +17,178 @@ extern char g_opt_mouse_buttons[];
 /* Switch button bits 0..15; 40..47 are stick directions, turned into axes in kbm_keyboard */
 enum { STICK_L_LEFT = 40, STICK_L_UP, STICK_L_RIGHT, STICK_L_DOWN, STICK_R_LEFT, STICK_R_UP, STICK_R_RIGHT, STICK_R_DOWN };
 
-static const struct { int key, bit; } KEYMAP[] = {
-  {'X', 0}, {KBM_KEY_SPACE, 0},   /* A */
-  {'Z', 1},                       /* B */
-  {'C', 2},                       /* X */
-  {'V', 3},                       /* Y */
-  {'Q', 6},                       /* L */
-  {'E', 7},                       /* R */
-  {'1', 8},                       /* ZL */
-  {'3', 9},                       /* ZR */
-  {KBM_KEY_ENTER, 10},            /* + */
-  {KBM_KEY_BACKSPACE, 11},        /* - */
-  {KBM_KEY_LEFT, 12}, {KBM_KEY_UP, 13}, {KBM_KEY_RIGHT, 14}, {KBM_KEY_DOWN, 15},
-  {'A', STICK_L_LEFT}, {'W', STICK_L_UP}, {'D', STICK_L_RIGHT}, {'S', STICK_L_DOWN},
-  {'J', STICK_R_LEFT}, {'I', STICK_R_UP}, {'L', STICK_R_RIGHT}, {'K', STICK_R_DOWN},
+/* The default layout follows PrimeHack's Metroid Prime defaults where Prime 4 has the same action: Space jumps (B),
+   Shift locks on (ZL), Ctrl morphs (Y), E and Alt are the visor and spring ball button (X), 1-4 pick the D-pad
+   weapons, Tab or ` pauses (-). The left mouse button fires (A, [Input] mouse_buttons). */
+typedef struct { const char* key; const char* label; int bit; const char* def; } KbmAction;
+static const KbmAction ACTIONS[] = {
+  {"key_a", "A", 0, "Enter"},
+  {"key_b", "B", 1, "Space"},
+  {"key_x", "X", 2, "E, Alt"},
+  {"key_y", "Y", 3, "Ctrl"},
+  {"key_l", "L", 6, "Q"},
+  {"key_r", "R", 7, "F"},
+  {"key_zl", "ZL", 8, "Shift"},
+  {"key_zr", "ZR", 9, "-"},
+  {"key_plus", "+", 10, "R"},
+  {"key_minus", "-", 11, "Tab, Grave"},
+  {"key_lstick_click", "Left stick click", 4, "-"},
+  {"key_rstick_click", "Right stick click", 5, "-"},
+  {"key_dpad_up", "D-pad up", 13, "3"},
+  {"key_dpad_down", "D-pad down", 15, "4"},
+  {"key_dpad_left", "D-pad left", 12, "2"},
+  {"key_dpad_right", "D-pad right", 14, "1"},
+  {"key_lstick_up", "Move forward", STICK_L_UP, "W, Up"},
+  {"key_lstick_down", "Move back", STICK_L_DOWN, "S, Down"},
+  {"key_lstick_left", "Move left", STICK_L_LEFT, "A, Left"},
+  {"key_lstick_right", "Move right", STICK_L_RIGHT, "D, Right"},
+  {"key_rstick_up", "Look up", STICK_R_UP, "I"},
+  {"key_rstick_down", "Look down", STICK_R_DOWN, "K"},
+  {"key_rstick_left", "Look left", STICK_R_LEFT, "J"},
+  {"key_rstick_right", "Look right", STICK_R_RIGHT, "L"},
 };
+#define KBM_NACT ((int)(sizeof ACTIONS / sizeof *ACTIONS))
+#define KBM_CHORDS 6        /* per action */
+#define KBM_CHORD_KEYS 4    /* per chord */
+#define KBM_TEXT 128
 
-/* per key, not per Switch button: X and Space both press A, and letting go of one must not release the other.
+int kbm_action_count(void){ return KBM_NACT; }
+const char* kbm_action_key(int i){ return i >= 0 && i < KBM_NACT ? ACTIONS[i].key : ""; }
+const char* kbm_action_label(int i){ return i >= 0 && i < KBM_NACT ? ACTIONS[i].label : ""; }
+const char* kbm_action_default(int i){ return i >= 0 && i < KBM_NACT ? ACTIONS[i].def : ""; }
+int kbm_action_find(const char* ini_key){
+  for(int i = 0; i < KBM_NACT; i++) if(!strcmp(ACTIONS[i].key, ini_key)) return i;
+  return -1;
+}
+
+/* ---- key names, as the .ini and the menu write them */
+static const struct { int key; const char* name; } KEY_NAMES[] = {
+  {KBM_KEY_SPACE, "Space"}, {KBM_KEY_ENTER, "Enter"}, {KBM_KEY_BACKSPACE, "Backspace"}, {KBM_KEY_TAB, "Tab"},
+  {KBM_KEY_GRAVE, "Grave"}, {KBM_KEY_SHIFT, "Shift"}, {KBM_KEY_CTRL, "Ctrl"}, {KBM_KEY_ALT, "Alt"},
+  {KBM_KEY_LEFT, "Left"}, {KBM_KEY_UP, "Up"}, {KBM_KEY_RIGHT, "Right"}, {KBM_KEY_DOWN, "Down"},
+  {KBM_KEY_CAPSLOCK, "CapsLock"}, {KBM_KEY_INSERT, "Insert"}, {KBM_KEY_DELETE, "Delete"}, {KBM_KEY_HOME, "Home"},
+  {KBM_KEY_END, "End"}, {KBM_KEY_PAGEUP, "PageUp"}, {KBM_KEY_PAGEDOWN, "PageDown"}, {KBM_KEY_DASH, "Dash"},
+  {KBM_KEY_EQUALS, "Equals"}, {KBM_KEY_LBRACKET, "LBracket"}, {KBM_KEY_RBRACKET, "RBracket"},
+  {KBM_KEY_BACKSLASH, "Backslash"}, {KBM_KEY_SEMICOLON, "Semicolon"}, {KBM_KEY_APOSTROPHE, "Apostrophe"},
+  {KBM_KEY_COMMA, "Comma"}, {KBM_KEY_PERIOD, "Period"}, {KBM_KEY_SLASH, "Slash"},
+  {KBM_KEY_NUM0, "Num0"}, {KBM_KEY_NUM0 + 1, "Num1"}, {KBM_KEY_NUM0 + 2, "Num2"}, {KBM_KEY_NUM0 + 3, "Num3"},
+  {KBM_KEY_NUM0 + 4, "Num4"}, {KBM_KEY_NUM0 + 5, "Num5"}, {KBM_KEY_NUM0 + 6, "Num6"}, {KBM_KEY_NUM0 + 7, "Num7"},
+  {KBM_KEY_NUM0 + 8, "Num8"}, {KBM_KEY_NUM0 + 9, "Num9"}, {KBM_KEY_NUM_ADD, "NumAdd"}, {KBM_KEY_NUM_SUB, "NumSub"},
+  {KBM_KEY_NUM_MUL, "NumMul"}, {KBM_KEY_NUM_DIV, "NumDiv"}, {KBM_KEY_NUM_DECIMAL, "NumDecimal"},
+};
+/* other spellings the .ini accepts */
+static const struct { const char* alias; int key; } KEY_ALIASES[] = {
+  {"`", KBM_KEY_GRAVE}, {"Return", KBM_KEY_ENTER}, {"Control", KBM_KEY_CTRL}, {"Minus", KBM_KEY_DASH},
+};
+static const char LETTERS[] = "A\0" "B\0" "C\0" "D\0" "E\0" "F\0" "G\0" "H\0" "I\0" "J\0" "K\0" "L\0" "M\0" "N\0" "O\0"
+                              "P\0" "Q\0" "R\0" "S\0" "T\0" "U\0" "V\0" "W\0" "X\0" "Y\0" "Z";
+static const char DIGITS[] = "0\0" "1\0" "2\0" "3\0" "4\0" "5\0" "6\0" "7\0" "8\0" "9";
+
+const char* kbm_key_name(int key){
+  if(key >= 'A' && key <= 'Z') return LETTERS + 2 * (key - 'A');
+  if(key >= '0' && key <= '9') return DIGITS + 2 * (key - '0');
+  for(size_t i = 0; i < sizeof KEY_NAMES / sizeof *KEY_NAMES; i++) if(KEY_NAMES[i].key == key) return KEY_NAMES[i].name;
+  return "";
+}
+
+static int name_eq(const char* a, const char* b){
+  while(*a && *b){
+    if(tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+    a++;
+    b++;
+  }
+  return !*a && !*b;
+}
+
+int kbm_key_from_name(const char* name){
+  if(name[0] && !name[1]){
+    int c = toupper((unsigned char)name[0]);
+    if((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) return c;
+  }
+  for(size_t i = 0; i < sizeof KEY_NAMES / sizeof *KEY_NAMES; i++) if(name_eq(name, KEY_NAMES[i].name)) return KEY_NAMES[i].key;
+  for(size_t i = 0; i < sizeof KEY_ALIASES / sizeof *KEY_ALIASES; i++) if(name_eq(name, KEY_ALIASES[i].alias)) return KEY_ALIASES[i].key;
+  return KBM_KEY_NONE;
+}
+
+/* ---- the bindings in use. Whatever thread applies settings (main.c ini_apply) writes the text and marks it dirty;
+   the input thread parses it into chords at its next poll. g_bind_lock guards the text */
+typedef struct { unsigned char key[KBM_CHORD_KEYS]; unsigned char n; } KbmChord;
+static char g_bind_text[KBM_NACT][KBM_TEXT];
+static unsigned char g_bind_from_ini[KBM_NACT];
+static volatile char g_bind_lock;
+static volatile int g_bind_dirty = 1;
+static KbmChord g_chords[KBM_NACT][KBM_CHORDS];   /* input thread */
+static int g_nchords[KBM_NACT];
+
+static void bind_lock(void){ while(__atomic_test_and_set(&g_bind_lock, __ATOMIC_ACQUIRE)) {} }
+static void bind_unlock(void){ __atomic_clear(&g_bind_lock, __ATOMIC_RELEASE); }
+
+int kbm_binding_set(const char* ini_key, const char* value){
+  int i = kbm_action_find(ini_key);
+  if(i < 0) return 0;
+  bind_lock();
+  snprintf(g_bind_text[i], KBM_TEXT, "%s", value);
+  g_bind_from_ini[i] = 1;
+  bind_unlock();
+  __atomic_store_n(&g_bind_dirty, 1, __ATOMIC_RELEASE);
+  return 1;
+}
+
+void kbm_binding_get(int i, char* out, int cap){
+  if(cap <= 0) return;
+  out[0] = 0;
+  if(i < 0 || i >= KBM_NACT) return;
+  bind_lock();
+  snprintf(out, (size_t)cap, "%s", g_bind_from_ini[i] ? g_bind_text[i] : ACTIONS[i].def);
+  bind_unlock();
+}
+
+/* "E, Alt+1, -" -> chords; a chord with an unknown key name is dropped, and logged */
+static int chords_parse(const char* action, const char* s, KbmChord* out){
+  int n = 0;
+  while(*s && n < KBM_CHORDS){
+    char tok[64];
+    int len = 0;
+    while(*s == ' ' || *s == '\t') s++;
+    while(*s && *s != ',' && len < 63) tok[len++] = *s++;
+    while(*s && *s != ',') s++;
+    if(*s == ',') s++;
+    while(len > 0 && (tok[len - 1] == ' ' || tok[len - 1] == '\t')) len--;
+    tok[len] = 0;
+    if(!len || !strcmp(tok, "-")) continue;
+    KbmChord c = {{0}, 0};
+    int ok = 1;
+    for(const char* p = tok; *p;){
+      char name[32];
+      int k = 0;
+      while(*p == ' ') p++;
+      while(*p && *p != '+' && k < 31) name[k++] = *p++;
+      while(k > 0 && name[k - 1] == ' ') k--;
+      name[k] = 0;
+      if(*p == '+') p++;
+      int key = kbm_key_from_name(name);
+      if(key == KBM_KEY_NONE || c.n == KBM_CHORD_KEYS){
+        ok = 0;
+        break;
+      }
+      c.key[c.n++] = (unsigned char)key;
+    }
+    if(ok && c.n) out[n++] = c;
+    else LOG("input: %s: \"%s\" is not a key or chord this build knows, ignored\n", action, tok);
+  }
+  return n;
+}
+
+static void bindings_rebuild(void){
+  if(!__atomic_exchange_n(&g_bind_dirty, 0, __ATOMIC_ACQ_REL)) return;
+  for(int i = 0; i < KBM_NACT; i++){
+    char text[KBM_TEXT];
+    kbm_binding_get(i, text, sizeof text);
+    g_nchords[i] = chords_parse(ACTIONS[i].key, text, g_chords[i]);
+  }
+}
+
+/* per key, not per Switch button: Tab and ` both press -, and letting go of one must not release the other.
    tapped keeps a press that came and went between two polls, so a quick tap still reaches the game */
 static volatile unsigned char g_key_held[KBM_KEY_COUNT], g_key_tapped[KBM_KEY_COUNT];
 
@@ -45,18 +202,117 @@ static i32 keys_axis(u64 dirs, int neg, int pos){
   return ((dirs >> pos) & 1 ? 32767 : 0) - ((dirs >> neg) & 1 ? 32767 : 0);
 }
 
-void kbm_keyboard(u64* buttons, i32* lx, i32* ly, i32* rx, i32* ry){
-  u64 bits = 0;
-  for(size_t i = 0; i < sizeof KEYMAP / sizeof *KEYMAP; i++){
-    int key = KEYMAP[i].key;
-    if(g_key_held[key] || g_key_tapped[key]) bits |= 1ull << KEYMAP[i].bit;
+/* every key of chord a is in the longer chord b */
+static int chord_within(const KbmChord* a, const KbmChord* b){
+  if(a->n >= b->n) return 0;
+  for(int i = 0; i < a->n; i++){
+    int found = 0;
+    for(int j = 0; j < b->n; j++) found |= a->key[i] == b->key[j];
+    if(!found) return 0;
   }
-  for(size_t i = 0; i < sizeof KEYMAP / sizeof *KEYMAP; i++) g_key_tapped[KEYMAP[i].key] = 0;
+  return 1;
+}
+
+void kbm_keyboard(u64* buttons, i32* lx, i32* ly, i32* rx, i32* ry){
+  bindings_rebuild();
+  unsigned char down[KBM_KEY_COUNT];
+  for(int k = 0; k < KBM_KEY_COUNT; k++){
+    down[k] = g_key_held[k] | g_key_tapped[k];
+    g_key_tapped[k] = 0;
+  }
+  const KbmChord* on[KBM_NACT * KBM_CHORDS];
+  int on_bit[KBM_NACT * KBM_CHORDS], non = 0;
+  for(int i = 0; i < KBM_NACT; i++)
+    for(int c = 0; c < g_nchords[i]; c++){
+      const KbmChord* ch = &g_chords[i][c];
+      int all = 1;
+      for(int k = 0; k < ch->n; k++) all &= down[ch->key[k]] != 0;
+      if(all){
+        on[non] = ch;
+        on_bit[non++] = ACTIONS[i].bit;
+      }
+    }
+  u64 bits = 0;
+  for(int i = 0; i < non; i++){
+    int covered = 0;
+    for(int j = 0; j < non && !covered; j++) covered = chord_within(on[i], on[j]);
+    if(!covered) bits |= 1ull << on_bit[i];
+  }
   *buttons = bits & 0xFFFFull;
   *lx = keys_axis(bits, STICK_L_LEFT, STICK_L_RIGHT);
   *ly = keys_axis(bits, STICK_L_DOWN, STICK_L_UP);
   *rx = keys_axis(bits, STICK_R_LEFT, STICK_R_RIGHT);
   *ry = keys_axis(bits, STICK_R_DOWN, STICK_R_UP);
+}
+
+/* ---- press-a-key capture (input_kbm.h). The window side owns g_cap_held, g_cap_ignore, g_cap_mods and
+   g_cap_swallow; the menu thread only starts, cancels and takes. g_cap_state: 0 idle, 1 waiting, 2 a chord is ready */
+static volatile int g_cap_state;
+static unsigned char g_cap_held[KBM_KEY_COUNT], g_cap_ignore[KBM_KEY_COUNT];
+static int g_cap_mods, g_cap_swallow;
+static char g_cap_out[64];
+static const int CAP_MODS[3] = {KBM_KEY_CTRL, KBM_KEY_SHIFT, KBM_KEY_ALT};   /* the order a chord's name lists them */
+
+static int cap_mod_bit(int key){
+  for(int i = 0; i < 3; i++) if(CAP_MODS[i] == key) return 1 << i;
+  return 0;
+}
+
+static void cap_finish(int key){
+  char out[64] = "";
+  for(int i = 0; i < 3; i++)
+    if(g_cap_mods & 1 << i){
+      if(out[0]) strcat(out, "+");
+      strcat(out, kbm_key_name(CAP_MODS[i]));
+    }
+  if(key != KBM_KEY_NONE){
+    if(out[0]) strcat(out, "+");
+    strcat(out, kbm_key_name(key));
+  }
+  memcpy(g_cap_out, out, sizeof out);
+  __atomic_store_n(&g_cap_state, 2, __ATOMIC_RELEASE);
+}
+
+int kbm_capture_key(int key, int down){
+  if(key <= KBM_KEY_NONE || key >= KBM_KEY_COUNT || !kbm_key_name(key)[0]) return 0;
+  int repeat = down && g_cap_held[key];
+  g_cap_held[key] = down ? 1 : 0;
+  if(!down) g_cap_ignore[key] = 0;
+  if(g_cap_swallow == key){   /* the key that finished a capture: its auto-repeat and its release belong to it too */
+    if(!down) g_cap_swallow = 0;
+    return 1;
+  }
+  if(__atomic_load_n(&g_cap_state, __ATOMIC_ACQUIRE) != 1) return 0;
+  if(down && (repeat || g_cap_ignore[key])) return 1;   /* held from before the capture (the Enter that started it) */
+  int mod = cap_mod_bit(key);
+  if(down){
+    if(mod){
+      g_cap_mods |= mod;
+      return 1;
+    }
+    cap_finish(key);
+    g_cap_swallow = key;
+    return 1;
+  }
+  if(mod && (g_cap_mods & mod)) cap_finish(KBM_KEY_NONE);   /* a modifier pressed and let go on its own */
+  return 1;
+}
+
+void kbm_capture_begin(void){
+  memcpy(g_cap_ignore, g_cap_held, sizeof g_cap_ignore);
+  g_cap_mods = 0;
+  __atomic_store_n(&g_cap_state, 1, __ATOMIC_RELEASE);
+}
+
+void kbm_capture_cancel(void){ __atomic_store_n(&g_cap_state, 0, __ATOMIC_RELEASE); }
+
+int kbm_capture_active(void){ return __atomic_load_n(&g_cap_state, __ATOMIC_ACQUIRE) == 1; }
+
+int kbm_capture_take(char* out, int cap){
+  if(__atomic_load_n(&g_cap_state, __ATOMIC_ACQUIRE) != 2) return 0;
+  snprintf(out, (size_t)cap, "%s", g_cap_out);
+  __atomic_store_n(&g_cap_state, 0, __ATOMIC_RELEASE);
+  return 1;
 }
 
 /* ---------------------------------------------------------------- mouse */

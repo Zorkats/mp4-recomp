@@ -85,7 +85,8 @@ setup compiles it on your PC. No Nintendo files, keys or firmware are included.
    In the game, F1 (or the Home / Guide button) opens the menu; most settings change right away.
 
 Controllers: Xbox controllers work as they are; SDL2.dll (included) adds Switch Pro, Joy-Con, DualShock 4, DualSense
-and 8BitDo over USB or Bluetooth. Keyboard: arrows = D-pad, WASD = stick, X/Z/C/V = A/B/X/Y, Enter = +, Backspace = -.
+and 8BitDo over USB or Bluetooth. Keyboard and mouse follow PrimeHack: WASD move, mouse aims, left click fires,
+right click or Shift locks on, Space jumps, Ctrl morphs, E visors, 1-4 weapons. F1 > Controls rebinds any key.
 
 Built on the recompiled runtime by yozander2009-stack, with Claude by Anthropic (AI pair programmer).
 Credits: SwitchRecomp by MZ Labs (recompiler and runtime); ScarletNX (native Vulkan renderer); Krydar, Nova77, xSeRosiSx (button-icon mods, downloaded on request; art: Xelu's FREE Controller Prompts); program icon: Metroid icon created by Smashicons - Flaticon (https://www.flaticon.com/free-icons/metroid); Dear ImGui; SDL2; zlib; libvpx; OpenH264; GCC / MinGW-w64; Python. Licences are in the licenses folder; the EXE is

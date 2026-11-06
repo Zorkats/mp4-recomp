@@ -43,8 +43,13 @@ static inline u64 bl_block_size(u32 bh, u32 bd) { return (u64)GOB_SIZE << (bh + 
 
 /* the bytes of a surface row_bytes wide, h rows high and d slices deep, in blocks of 2^bh GOBs high and 2^bd deep
    (gpu.c's bl_offset), from src to dst, both in that layout. The padding (bytes past a row, rows past h, slices past
-   d) is left as dst had it: whole GOBs inside the surface go in runs as long as memory has them, those on its edges
-   16 bytes or less at a time */
-void bl_land(u8* dst, const u8* src, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd);
+   d) is base's when base isn't NULL, else left as dst had it: whole GOBs inside the surface go in runs as long as
+   memory has them, those on its edges 16 bytes or less at a time */
+void bl_land(u8* dst, const u8* src, const u8* base, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd);
+/* the bytes bl_land writes with base: every GOB of the surface's whole blocks and slabs */
+static inline u64 bl_land_bytes(u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd) {
+    u64 slabs = ((u64)d + (1u << bd) - 1) >> bd;
+    return (slabs * bl_block_rows(h, bh) * bl_gobs_x(row_bytes) << (bh + bd)) * GOB_SIZE;
+}
 
 #endif

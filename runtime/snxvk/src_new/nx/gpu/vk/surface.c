@@ -857,11 +857,51 @@ static u32 rt_newer_over(const Surf* s, u64 size, Surf** local, u32 nlocal, Surf
     }
     return k;
 }
+/* the bytes before at the landing hasn't written yet, from base: a gap between its rows, layers or blocks */
+static void land_gap(u8* dst, const u8* base, u64* done, u64 at) {
+    if (base && at > *done) memcpy(dst + *done, base + *done, at - *done);
+    if (at > *done) *done = at;
+}
+/* s's pixels p, read back, in its guest layout at dst, sz bytes. With base, the bytes outside the pixels (pitch, block
+   and layer padding) are base's, each byte written once where a copy of base first and the pixels over it wrote the
+   pixels' twice: one of the write-back's whole passes over a storage image, a frame. The pixels' places must then go
+   up through dst, which a layout with layers or rows over each other doesn't: base is copied whole first there */
+static void land_layout(const Surf* s, u8* dst, const u8* p, const u8* base, u64 sz) {
+    u32 gh = guest_h(s), bh = s->bl ? bl_height(gh, s->bh) : 0;
+    u64 row = (u64)guest_w(s) * s->f.bpp, slice = row * gh, done = 0;
+    u64 extent = s->bl ? bl_land_bytes((u32)row, gh, surf_volume(s) ? surf_slices(s) : 1, bh, surf_volume(s) ? s->bd : 0)
+                       : (u64)s->pitch * (gh - 1) + row;
+    int ordered = (s->bl || gh < 2 || s->pitch >= row) &&
+                  (surf_volume(s) && s->bl ? extent <= sz
+                                           : (s->layers < 2 || s->layer_size >= extent) &&
+                                                 (u64)s->layer_size * (s->layers - 1) + extent <= sz);
+    if (base && !ordered) {
+        memcpy(dst, base, sz);
+        base = NULL;
+    }
+    if (s->bl && surf_volume(s)) {
+        bl_land(dst, p, base, (u32)row, gh, surf_slices(s), bh, s->bd);
+        done = extent;
+    } else
+        for (u32 layer = 0; layer < s->layers; layer++) {
+            u64 at = (u64)layer * s->layer_size;
+            land_gap(dst, base, &done, at);
+            if (s->bl) {
+                bl_land(dst + at, p + at, base ? base + at : NULL, (u32)row, gh, 1, bh, 0);
+                done = at + extent;
+            } else
+                for (u32 y = 0; y < gh; y++) {
+                    land_gap(dst, base, &done, at + (u64)y * s->pitch);
+                    memcpy(dst + at + (u64)y * s->pitch, p + (u64)layer * slice + y * row, row);
+                    done = at + (u64)y * s->pitch + row;
+                }
+        }
+    land_gap(dst, base, &done, sz);
+}
 /* s's pixels, read back to p as of its write generation wgen, into guest memory in its layout (or over original, a
    storage image's merge), but for the pages the CPU wrote since s's draws (cpu_newer) */
 static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** keep, u64* keep_size) {
-    u32 gh = guest_h(s);
-    u64 gva = s->gva, row = (u64)guest_w(s) * s->f.bpp, slice = row * gh;
+    u64 gva = s->gva;
     u64 sz = rt_bytes(s), gw0 = gpu_mem_generation();
     CpuRuns newer;
     u32 kept = original ? 0 : cpu_newer(s, sz, &newer);
@@ -870,23 +910,10 @@ static void flush_land(Surf* s, const u8* p, const u8* original, u64 wgen, u8** 
     if (!dst) {
         tmp = malloc(sz);
         if (!tmp) return;
-        if (original)
-            memcpy(tmp, original, sz);
-        else
-            gmem_read(gva, tmp, sz);
+        if (!original) gmem_read(gva, tmp, sz);
         dst = tmp;
     }
-    if (s->bl && surf_volume(s))
-        bl_land(dst, p, (u32)row, gh, surf_slices(s), bl_height(gh, s->bh), s->bd);
-    else
-        for (u32 layer = 0; layer < s->layers; layer++) {
-            u8* layer_dst = dst + (u64)layer * s->layer_size;
-            if (s->bl)
-                bl_land(layer_dst, p + (u64)layer * s->layer_size, (u32)row, gh, 1, bl_height(gh, s->bh), 0);
-            else
-                for (u32 y = 0; y < gh; y++)
-                    memcpy(layer_dst + (u64)y * s->pitch, p + (u64)layer * slice + y * row, row);
-        }
+    land_layout(s, dst, p, original, sz);
     Surf *above_local[16], **above;
     u32 nabove = rt_newer_over(s, sz, above_local, 16, &above);
     int guest_changed = 0, flushing = g_rt_flushing;

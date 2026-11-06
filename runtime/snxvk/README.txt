@@ -36,6 +36,10 @@ Local changes to upstream (marked "SWR" in the code):
   gpu/vk/writeback.c    vk_fast_writeback: a storage result's 1 KB chunk the CPU left alone since the draw (guest memory
                         still equals the pre-draw copy) lands in one copy instead of the byte-by-byte merge; the merge
                         held the frame's syncpoint back (57 -> 85+ FPS on the benchmark route). Unchanged result
+  gpu/vk/surface.c      flush_land: a storage image's result lands over its pre-draw bytes in one pass (land_layout:
+  gpu/texture/blocklinear.c  bl_land's base takes the padding and partial GOBs from them) instead of a whole copy of
+                        those bytes first and the result over it; the same bytes land (checked against the old landing
+                        on 200,000 random shapes). Overlapping rows or layers keep the old copy first
   gpu/vk/ui.c           vk_menu_draw: our in-game menu (runtime/ov_vk.h, ov_vk_frame) through the overlay pipeline
                         (pipeline_new split out of pipeline_make, one pipeline per target format)
   gpu/vk/vk.h           the declarations of the above

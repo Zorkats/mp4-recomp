@@ -10,8 +10,9 @@
 /* GOBs are walked in memory order, so the whole ones next to each other in memory (a block's, and the blocks of a
    row of blocks when the row's width is a multiple of 64 bytes) are one memcpy. GOB g of the layout is GOB in of
    block g >> (bh + bd); blocks go gobs_x to a row of blocks, block_rows rows to a slab of 2^bd slices, and inside a
-   block GOB in is row in & (2^bh - 1) of slice in >> bh */
-void bl_land(u8* dst, const u8* src, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd) {
+   block GOB in is row in & (2^bh - 1) of slice in >> bh. With base, a GOB not whole is base's first, so dst needs
+   no copy of base beforehand: each byte is written once */
+void bl_land(u8* dst, const u8* src, const u8* base, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd) {
     u32 gobs_x = (u32)bl_gobs_x(row_bytes), block_gobs_log2 = bh + bd;
     u64 block_rows = bl_block_rows(h, bh);
     u64 slabs = ((u64)d + (1u << bd) - 1) >> bd;
@@ -25,6 +26,7 @@ void bl_land(u8* dst, const u8* src, u32 row_bytes, u32 h, u32 d, u32 bh, u32 bd
             continue; /* whole: copied with its run */
         if (whole < g) memcpy(dst + whole * GOB_SIZE, src + whole * GOB_SIZE, (size_t)(g - whole) * GOB_SIZE);
         whole = g + 1;
+        if (base) memcpy(dst + g * GOB_SIZE, base + g * GOB_SIZE, GOB_SIZE); /* its bytes outside the surface */
         if (gy * GOB_SIZE_Y >= h || z >= d) continue; /* padding */
         /* a GOB on the surface's edge: the rows and columns inside it, 16 byte runs or less */
         u32 rows = h - (u32)gy * GOB_SIZE_Y < GOB_SIZE_Y ? h - (u32)gy * GOB_SIZE_Y : GOB_SIZE_Y, x, y;

@@ -57,6 +57,17 @@ typedef struct {
     u64 ns, passes, draws;
 } GpKey;
 
+/* the host clock the submissions are stamped with and the GPU's is calibrated against: CLOCK_MONOTONIC, or on
+   Windows (which has none) QueryPerformanceCounter, plat_ns's clock */
+#if defined(_WIN32)
+#include <windows.h>
+#define GP_HOST_DOMAIN VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT
+static u64 gp_cpu_ns(void) { return plat_ns(); }
+#else
+#define GP_HOST_DOMAIN VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT
+static u64 gp_cpu_ns(void) { return plat_monotonic_ns(); }
+#endif
+
 static int g_on = -1;
 static GpSlot* g_slot[VK_FRAMES];
 static GpKey g_key[GP_KEYS];
@@ -167,7 +178,7 @@ void vk_gpuprof_cb_end(VkCommandBuffer cb, int why, u64 value) {
         return;
     }
     s->q1 = g->used;
-    s->cpu = plat_monotonic_ns();
+    s->cpu = gp_cpu_ns();
     s->value = value;
     s->why = why;
     rec_CmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, g->pool, g->used++);
@@ -238,11 +249,18 @@ static void gp_report(void);
 static void gp_idle(const GpSlot* g, const u64* ts, double period) {
     static const VkCalibratedTimestampInfoEXT spec[2] = {
         {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL, VK_TIME_DOMAIN_DEVICE_EXT},
-        {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL, VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT}};
+        {VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT, NULL, GP_HOST_DOMAIN}};
     u64 pair[2], deviation;
     if (!g->nsub || !g_vk.has_calibrated_host || !g_vk.has_calibrated_mono ||
         !VK_OK(vkGetCalibratedTimestampsEXT(g_vk.dev, 2, spec, pair, &deviation)))
         return;
+#if defined(_WIN32)
+    {
+        static LARGE_INTEGER f;
+        if (!f.QuadPart) QueryPerformanceFrequency(&f);
+        pair[1] = (u64)((double)pair[1] * 1e9 / (double)f.QuadPart); /* QPC ticks onto plat_ns's nanoseconds */
+    }
+#endif
     for (u32 i = 0; i < g->nsub; i++) {
         const GpSub* s = &g->sub[i];
         if (!s->q1) continue;

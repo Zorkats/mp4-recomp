@@ -188,6 +188,10 @@ void snxvk_ini(const char* v){
   if(g_snxvk_want){ if(!getenv("SWR_WW")){ _putenv("SWR_WW=1"); set_ww=1; } }
   else if(set_ww){ _putenv("SWR_WW="); set_ww=0; } }
 
+/* [Graphics] vk_* tunings of the native Vulkan renderer, from the .ini (main.c), into swr_settings.c at start: 1 = on;
+   def = the .ini default, a value other than it goes in the log */
+static struct { const char* key; int on, def; } g_vk_tuning[]={ {"vk_fast_writeback",1,1}, {"vk_async_pipelines",0,0} };
+int snxvk_tuning_set(const char* k, int on){ for(unsigned i=0;i<sizeof g_vk_tuning/sizeof *g_vk_tuning;i++) if(!strcmp(k,g_vk_tuning[i].key)){ g_vk_tuning[i].on=on; return 1; } return 0; }
 void snxvk_gpu_init(void){ if(g_snxvk_want) snxv_gpu_init(); }
 
 /* the window is up (backend_win32): start Vulkan; 0 = it can't, the caller falls back to OpenGL */
@@ -211,6 +215,9 @@ int snxvk_start(void){
       if(prep) LOG("vulkan_native: the game's shaders are translated in the background when the game ships them\n"); }
     /* profile=1: the GPU's own time per rendering pass too (timestamps, "vulkan: GPU" lines every 10 s), so a slow
        scene shows whether the GPU or the threads feeding it are the limit */
+    { extern void snxv_swr_settings_tuning(const char*,int);
+      for(unsigned i=0;i<sizeof g_vk_tuning/sizeof *g_vk_tuning;i++){ snxv_swr_settings_tuning(g_vk_tuning[i].key,g_vk_tuning[i].on);
+        if(g_vk_tuning[i].on!=g_vk_tuning[i].def) LOG("vulkan_native: %s=%d\n",g_vk_tuning[i].key,g_vk_tuning[i].on); } }
     { extern void snxv_swr_settings_gpu_profile(int); extern int g_opt_prof; snxv_swr_settings_gpu_profile(g_opt_prof); } }   /* FIFO only with forced_vsync=1, like the GL path: otherwise mailbox, paced by snxvk_present (FIFO at 144/240 FPS on a 239 Hz screen lost frames to vblank waits) */
   if(!snxv_swr_vk_start()){ WARN("vulkan_native: Vulkan 1.3 renderer could not start (see above): using OpenGL\n");
     /* the guest memory was set up with write tracking for Vulkan; OpenGL would scan it on every submit (measured 19 FPS,
@@ -293,6 +300,7 @@ void snxvk_exit(void){ if(g_snxvk_on) snxv_swr_vk_save(1); }
 
 #else   /* built without the library: the option is ignored */
 void snxvk_ini(const char* v){ if(!strcmp(v,"vulkan_native")) WARN("renderer=vulkan_native: this build has no native Vulkan renderer (runtime/snxvk/libsnxvk.a): using OpenGL\n"); }
+int snxvk_tuning_set(const char* k, int on){ (void)k; (void)on; return 0; }
 void snxvk_gpu_init(void){}
 int snxvk_start(void){ return 0; }
 void snxvk_submit(const void* e, u32 n, u32 c, u32 i, u32 wi, u32 wv, u32 p){ (void)e;(void)n;(void)c;(void)i;(void)wi;(void)wv;(void)p; }

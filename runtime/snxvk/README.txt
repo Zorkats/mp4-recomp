@@ -30,11 +30,18 @@ Local changes to upstream (marked "SWR" in the code):
                         its source array (memcpy of the longer one's size)
   gpu/vk/device.c       VK_EXT_swapchain_colorspace asked for with hdr=1, the HDR swapchain format (scRGB FP16, else
                         HDR10 PQ), the present pass's views dropped with the swapchain
+                        On Windows the QueryPerformanceCounter time domain counts as the host clock, so gpuprof.c's
+                        GPU idle report (profile=1) works there too
+  gpu/vk/gpuprof.c      that report timed on QueryPerformanceCounter on Windows (plat_ns's clock)
+  gpu/vk/writeback.c    vk_fast_writeback: a storage result's 1 KB chunk the CPU left alone since the draw (guest memory
+                        still equals the pre-draw copy) lands in one copy instead of the byte-by-byte merge; the merge
+                        held the frame's syncpoint back (57 -> 85+ FPS on the benchmark route). Unchanged result
   gpu/vk/ui.c           vk_menu_draw: our in-game menu (runtime/ov_vk.h, ov_vk_frame) through the overlay pipeline
                         (pipeline_new split out of pipeline_make, one pipeline per target format)
   gpu/vk/vk.h           the declarations of the above
   gpu/vk/swr_glue.c     the renderer interface as plain functions for runtime/snxvk_glue.c, so it mirrors no struct
-  gpu/vk/swr_settings.c our .ini's settings (profile=1 also turns on vk_gpu_profile and vk_buffer_stats)
+  gpu/vk/swr_settings.c our .ini's settings (profile=1 also turns on vk_gpu_profile and vk_buffer_stats), and the
+                        [Graphics] vk_* switches: vk_fast_writeback (default 1), vk_async_pipelines (default 0)
   gpu/vk/dlss.c, dlss_stub.c: DLSS (private builds only; dlss_stub.c in the public one). Its hooks in render.c,
                         texture.c, device.c and spirv_translate.c are not yet carried over to this commit
 

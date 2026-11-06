@@ -326,6 +326,7 @@ static void ini_apply(const char* k, const char* v){
     else if(!strcmp(k,"cheats")){ extern int g_opt_cheats; g_opt_cheats=atoi(v)!=0; }   /* cheats.c, live */
     else if(!strcmp(k,"fov")){ extern int g_opt_fov; g_opt_fov=atoi(v); if(g_opt_fov<60) g_opt_fov=60; if(g_opt_fov>160) g_opt_fov=160; }   /* cheats.c FOV hook, live */
     else if(!strcmp(k,"anisotropy")){ g_opt_aniso=atoi(v); if(g_opt_aniso<0) g_opt_aniso=0; if(g_opt_aniso>16) g_opt_aniso=16; }
+    else if(!strncmp(k,"vk_",3)){ extern int snxvk_tuning_set(const char*,int); snxvk_tuning_set(k,atoi(v)); }   /* native Vulkan tunings (snxvk_glue.c) */
     else if(!strcmp(k,"dlss")){ extern int snxvk_dlss_mode; snxvk_dlss_mode=atoi(v); }   /* native Vulkan: snxvk dlss.c; OpenGL: dlss_gl.c + gpu_gl.c dlg_* */
     else if(!strcmp(k,"texture_threads")){ g_opt_tex_threads=atoi(v); if(g_opt_tex_threads<0) g_opt_tex_threads=0; if(g_opt_tex_threads>16) g_opt_tex_threads=16; }
     else if(!strcmp(k,"fast_forward")) g_opt_ff=atoi(v);
@@ -367,6 +368,8 @@ static const IniOpt INI_GRAPHICS[]={
   {"hdr_peak","0","HDR output: brightest highlight in nits; 0 = what the display reports"},
   {"prebuild_shaders","1","1 = build every shader before the game draws with it: the shaders it ships in romfs/system/shd, and the ones\n;   it unpacks into GPU memory (Metroid Prime 4 at boot), compiled in the background and kept ready. 0 = at first use"},
   {"shadows","1","0 = disable shadow maps (more FPS)"},
+  {"vk_fast_writeback","1","native Vulkan: 1 = a shader's storage image lands in guest memory a block at a time where the game left\n;   that memory alone (the per-byte merge held the frame back); 0 = byte by byte, as ScarletNX does"},
+  {"vk_async_pipelines","0","native Vulkan: 1 = a draw whose shader isn't built yet is skipped while it builds, instead of the game\n;   waiting for it: no hitch where a new effect first appears, but it shows up a few frames late. 0 = wait"},
   {"renderer","opengl","opengl, or vulkan = the game still renders with OpenGL but Vulkan puts the frames on screen\n;   (falls back to OpenGL output if the GPU driver can't share images between the two; restart required),\n;   or vulkan_native = EXPERIMENTAL native Vulkan renderer from ScarletNX (GPL-3.0; falls back to OpenGL if it can't start)"},
 #ifndef SWR_RELEASE   /* the public release: no DLSS (GPL) and no frame generation in that build */
   {"dlss","0","1 = NVIDIA DLAA anti-aliasing (renderer=opengl or vulkan_native, RTX GPU, nvngx_dlss.dll in the game folder):\n;   DLSS at the internal resolution with the game's own motion vectors; the HUD is untouched. 0 = off"},

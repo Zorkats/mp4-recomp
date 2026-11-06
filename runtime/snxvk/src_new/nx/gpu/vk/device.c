@@ -479,6 +479,11 @@ static int create_device(void) {
                     for (u32 i = 0; i < nd; i++) {
                         if (dom[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT) g_vk.has_calibrated_host = 1;
                         if (dom[i] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT) g_vk.has_calibrated_mono = 1;
+#if defined(_WIN32)
+                        /* Windows: QueryPerformanceCounter is plat_ns's clock, so gpuprof's idle report goes on it */
+                        if (dom[i] == VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT)
+                            g_vk.has_calibrated_host = g_vk.has_calibrated_mono = 1;
+#endif
                     }
                 free(dom);
             }

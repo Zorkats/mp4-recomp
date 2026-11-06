@@ -4,6 +4,7 @@
 #include "snx_settings.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 /* SWR_VK_RENDERDOC=PREFIX and SWR_VK_RENDERDOC_FRAMES=N,Ms,...: RenderDoc captures of chosen frames (vk/renderdoc.c),
    for debugging a scripted run; RenderDoc's folder must be on PATH. SWR_VK_SHADER_CORPUS=DIR: every shader's code
    and key, for tools/snx_shaderc.c (gpu/shader/corpus.c) */
@@ -33,4 +34,10 @@ void swr_settings_prepare(int on) { g_settings.prepare_shaders = on ? 1 : 0; }
 void swr_settings_gpu_profile(int on) {
     g_settings.gpu_profile = on ? 1 : 0;
     g_settings.buffer_copy_stats = on ? 1 : 0;
+}
+/* SwitchRecomp's own native Vulkan tunings, [Graphics] vk_* keys (main.c), each 1 = on: see where they are read */
+int g_swr_fast_writeback = 1; /* writeback.c: a chunk guest memory left alone lands in one copy */
+void swr_settings_tuning(const char* key, int on) {
+    if (!strcmp(key, "vk_fast_writeback")) g_swr_fast_writeback = on;
+    if (!strcmp(key, "vk_async_pipelines")) g_settings.async_pipelines = on ? 1 : 0; /* settings.txt Async pipelines */
 }

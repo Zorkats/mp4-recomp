@@ -39,6 +39,18 @@ static u64 nonzero_bytes(u64 x) {
     return (x & 0x0101010101010101ull) * 0xFF;
 }
 
+/* the first change of a landing: guest memory readied for the write, its bytes now (cur) where they can be read */
+static const u8* landing_begin(u64 addr, u32 size, u8** dst, u8** tmp) {
+    vk_result_begin();
+    vk_rt_before_write(addr, size);
+    *dst = gmem_ptr(addr, size);
+    if (*dst) return *dst;
+    *tmp = malloc(size);
+    if (!*tmp) fatal("Out of memory landing a shader storage buffer");
+    gmem_read(addr, *tmp, size);
+    return *tmp;
+}
+
 void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkChangedRun run, void* user) {
     /* res and org are host copies: the shader's output read back into host-cached memory, and the bytes it started
        from, snapshotted when it was bound (buffer.c, compute.c, surface.c). Comparing them reads no guest page, so it
@@ -59,6 +71,33 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
             i = end;
             continue;
         }
+        /* SwitchRecomp (vk_fast_writeback): where guest memory still holds what the shader started from over the
+           whole chunk, the merge below takes every byte the shader changed and the rest are the same in all three,
+           so the chunk lands as the shader's output in one copy. A graphics storage image whose texels change only
+           some of their bytes went byte by byte here, every frame: most of the landing's time, on the path to the
+           syncpoint the game waits for. Only within one guest page (the merge's page rule) and with no run callback
+           (buffer.c's wants the changed granules) */
+        if (g_swr_fast_writeback && !run && ((addr + i) >> 12) == ((addr + end - 1) >> 12)) {
+            if (!begun) {
+                begun = 1;
+                cur = landing_begin(addr, size, &dst, &tmp);
+            }
+            if (!memcmp(cur + i, org + i, end - i)) {
+                if (we != i) { /* not where the pending run ends: it is written, and the chunk starts a new one */
+                    if (we != ws) {
+                        if (dst)
+                            memcpy(dst + ws, res + ws, we - ws);
+                        else
+                            gmem_write(addr + ws, res + ws, we - ws);
+                    }
+                    ws = i;
+                }
+                we = end;
+                changed = 1;
+                i = end;
+                continue;
+            }
+        }
         for (u32 k = i; k < end; k += 8) { /* i is a multiple of 1024, so granules start at multiples of 8 */
             u32 w = end - k < 8 ? end - k : 8;
             if (!granule_differs(res, org, k, w)) continue;
@@ -71,16 +110,7 @@ void vk_write_changed_runs(u64 addr, const u8* res, const u8* org, u32 size, VkC
             }
             if (!begun) {
                 begun = 1;
-                vk_result_begin();
-                vk_rt_before_write(addr, size);
-                dst = gmem_ptr(addr, size);
-                cur = dst;
-                if (!cur) {
-                    tmp = malloc(size);
-                    if (!tmp) fatal("Out of memory landing a shader storage buffer");
-                    gmem_read(addr, tmp, size);
-                    cur = tmp;
-                }
+                cur = landing_begin(addr, size, &dst, &tmp);
             }
             /* the bytes the shader changed where guest memory still holds what it started from, in runs that
                go on across granules. A whole granule on one guest page is taken at once when all of its bytes or

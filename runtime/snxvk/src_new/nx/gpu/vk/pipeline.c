@@ -219,14 +219,53 @@ static VkDescriptorType binding_type(u32 i) {
            : i < SNX_VKB_RS  ? VK_DESCRIPTOR_TYPE_STORAGE_IMAGE
                              : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 }
+/* SWR: the vertex (0) and fragment (1) sets' buffer bindings whose offsets are given at the bind instead (dynamic):
+   constant buffer slots in g_vk_dyn_cb, storage buffer slots (bits 0-15) and the storage map (bit 16) in g_vk_dyn_sb.
+   A draw whose buffers only moved within the same VkBuffer then reuses its set (desc_set_cached), where every new
+   offset wrote a new one: 19% of the sets were reused on the benchmark route, 38% with these. The slots are the ones
+   whose offsets changed most there, within the device's limits (15 dynamic uniform buffers on NVIDIA). 0 with
+   descriptor buffers, which have no dynamic offsets, or with [Graphics] vk_dynamic_offsets=0 */
+u32 g_vk_dyn_cb[2], g_vk_dyn_sb[2];
+static int binding_dynamic(int s, u32 i) {
+    if (s < 0 || s >= 2) return 0;
+    if (i < SNX_VKB_SSBO) return (int)(g_vk_dyn_cb[s] >> i & 1);
+    if (i < SNX_VKB_TEX) return (int)(g_vk_dyn_sb[s] >> (i - SNX_VKB_SSBO) & 1);
+    return i == SNX_VKB_SMAP && (g_vk_dyn_sb[s] >> 16 & 1);
+}
+static void dynamic_init(void) {
+    static const u32 cb[2] = {0x39, 0x3F9}, sb[2] = {0x1000F, 0x1000F}; /* vertex 0, 3-5; fragment 0, 3-9 */
+    const VkPhysicalDeviceLimits* l = &g_vk.props.limits;
+    u32 ncb = (u32)__builtin_popcount(cb[0]) + (u32)__builtin_popcount(cb[1]);
+    u32 nsb = (u32)__builtin_popcount(sb[0]) + (u32)__builtin_popcount(sb[1]);
+    g_vk_dyn_cb[0] = g_vk_dyn_cb[1] = g_vk_dyn_sb[0] = g_vk_dyn_sb[1] = 0;
+    if (!g_swr_dynamic_offsets || g_vk.has_descriptor_buffers) return;
+    if (ncb > l->maxDescriptorSetUniformBuffersDynamic || nsb > l->maxDescriptorSetStorageBuffersDynamic) {
+        LOG("vulkan: dynamic buffer offsets off: %u uniform and %u storage buffers past this GPU's %u and %u\n", ncb,
+            nsb, l->maxDescriptorSetUniformBuffersDynamic, l->maxDescriptorSetStorageBuffersDynamic);
+        return;
+    }
+    memcpy(g_vk_dyn_cb, cb, sizeof cb);
+    memcpy(g_vk_dyn_sb, sb, sizeof sb);
+    LOG("vulkan: %u constant and %u storage buffer bindings of the vertex and fragment stages take dynamic offsets\n",
+        ncb, nsb);
+}
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets) {
     static const VkDescriptorType ty[VK_POOL_TYPES] = {
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER};
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER,   VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC};
     int k;
     for (k = 0; k < VK_POOL_TYPES; k++) {
         u32 n = 0;
         u32 i;
+        if (k >= 5) { /* SWR: the most a set has, and at least one (a pool size of 0 is invalid) */
+            const u32* m = k == 5 ? g_vk_dyn_cb : g_vk_dyn_sb;
+            u32 a = (u32)__builtin_popcount(m[0]), b = (u32)__builtin_popcount(m[1]);
+            n = a > b ? a : b;
+            sz[k] = (VkDescriptorPoolSize){ty[k], (n ? n : 1) * sets};
+            continue;
+        }
         for (i = 0; i < SNX_VKB_END; i++)
             if (binding_type(i) == ty[k]) n += (i == SNX_VKB_TEXARRAY || i == SNX_VKB_TEXDEPTH) ? SNX_TEX_ARRAY : 1;
         sz[k] = (VkDescriptorPoolSize){ty[k], n * sets};
@@ -268,6 +307,8 @@ void vk_pipeline_init(void) {
                                               VK_SHADER_STAGE_GEOMETRY_BIT};
     /* the tessellation and geometry stages' sets come after the first two, where the device binds that many */
     g_vk_stage_sets = g_vk.props.limits.maxBoundDescriptorSets >= 5 ? 5 : 2;
+    dynamic_init();
+    int own_compute = g_vk.has_descriptor_buffers || g_vk_dyn_cb[0] || g_vk_dyn_sb[0]; /* SWR: a layout of its own */
     for (int s = 0; s < 5; s++) {
         VkDescriptorSetLayoutBinding b[SNX_VKB_END];
         u32 count = 0;
@@ -302,16 +343,25 @@ void vk_pipeline_init(void) {
         for (int arrays = 0; arrays < 2; arrays++) {
             u32 n = count;
             while (!arrays && n && b[n - 1].binding >= SNX_VKB_TEXARRAY) n--; /* the arrays are the last bindings */
+            VkDescriptorSetLayoutBinding g[SNX_VKB_END]; /* SWR: with the dynamic ones (binding_dynamic) */
+            for (u32 j = 0; j < n; j++) {
+                g[j] = b[j];
+                if (binding_dynamic(s, b[j].binding))
+                    g[j].descriptorType = b[j].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                              ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC
+                                              : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+            }
             VkDescriptorSetLayoutCreateInfo dl = {
                 .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
                 .flags = g_vk.has_descriptor_buffers ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0,
                 .bindingCount = n,
-                .pBindings = b};
+                .pBindings = g};
             if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk_dslayout[arrays][s])))
                 fatal("vulkan: cannot create shader descriptor layout");
-            vk_descriptors_layout(g_vk_dslayout[arrays][s], b, n);
-            if (g_vk.has_descriptor_buffers && !s && !arrays) {
+            vk_descriptors_layout(g_vk_dslayout[arrays][s], g, n);
+            if (own_compute && !s && !arrays) { /* compute binds no dynamic offsets: the plain bindings */
                 dl.flags = 0;
+                dl.pBindings = b;
                 if (!VK_OK(vkCreateDescriptorSetLayout(g_vk.dev, &dl, NULL, &g_vk.cs_dslayout)))
                     fatal("vulkan: cannot create compute descriptor layout");
             }
@@ -336,7 +386,7 @@ void vk_pipeline_init(void) {
     }
     g_vk_playout = vk_playout(0);
     g_vk.cs_playout = g_vk_playout;
-    if (g_vk.has_descriptor_buffers) {
+    if (own_compute) {
         VkPushConstantRange pc = {VK_PUSH_STAGES, 0, 80};
         VkPipelineLayoutCreateInfo compute = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                               .setLayoutCount = 1,

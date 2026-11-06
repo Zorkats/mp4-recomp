@@ -1863,21 +1863,34 @@ static VkDescriptorSet desc_set_cached(VkDescriptorSetLayout layout, DescWrites*
     *e = (DescSetEntry){hash[0], hash[1], frame, set};
     return set;
 }
+/* SWR: a set's dynamic offsets (pipeline.c binding_dynamic), in binding order, as the bind takes them */
+typedef struct {
+    u32 off[VK_DYN_MAX];
+    u32 n;
+} DynOffsets;
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
-                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images);
+                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
+                                  DynOffsets* dyn);
 /* scaled: a bit for each texture slot bound to a scaled render target (shader_scaled_coords in shader/emit_texture.c) */
 static VkDescriptorSet stage_set(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro, u32* fb,
-                                 u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
+                                 u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
+                                 DynOffsets* dyn) {
     SNX_ZONE(z, "stage set");
-    VkDescriptorSet set = stage_set_(ds, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images);
+    VkDescriptorSet set = stage_set_(ds, stage, s, rt, zt, n, zt_ro, fb, scaled, res, draw, images, dyn);
     SNX_ZONE_END(z);
     return set;
 }
 static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** rt, Surf* zt, u32 n, int* zt_ro,
-                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images) {
-    VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][shader_vk_set(stage)];
+                                  u32* fb, u64* scaled, TexRes* res, const VkDrawStorage* draw, DrawImages* images,
+                                  DynOffsets* dyn) {
+    int vset = shader_vk_set(stage);
+    VkDescriptorSetLayout layout = g_vk_dslayout[s->indexed][vset];
     VkDescriptorSet set = VK_NULL_HANDLE; /* the writes take it once their contents are known (desc_set_cached) */
     DescWrites d;
+    /* SWR: the dynamic bindings' offsets by slot, written as 0 in the set so the same buffers reuse it; a slot the
+       program leaves unbound gets 0 */
+    u32 dcb = vset < 2 ? g_vk_dyn_cb[vset] : 0, dsb = vset < 2 ? g_vk_dyn_sb[vset] : 0;
+    u64 cbo[18] = {0}, sbo[17] = {0};
     d.n = 0;
     for (int i = 0; i < 18; i++) {
         if (!(s->si.cbuf_mask & (1u << i))) continue;
@@ -1885,7 +1898,11 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
         VkBuffer b;
         u64 o;
         if (!cb_get(ds, stage, i, sz, &b, &o)) return VK_NULL_HANDLE;
-        dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
+        if (dcb >> i & 1) {
+            cbo[i] = o;
+            dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, b, 0, sz);
+        } else
+            dw_buffer(&d, set, SNX_VKB_CB + i, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, b, o, sz);
     }
     int ordered = !(ds->owner & 0x80000000u) || !g_settings.nvn_storage_ordering;
     for (int i = 0; i < s->si.ngbuf && i < 16; i++) {
@@ -1901,11 +1918,32 @@ static VkDescriptorSet stage_set_(const DsState* ds, int stage, VkSh* s, Surf** 
                  : addr                 ? vk_buf_get_input(addr, size, sa, &b, &o)
                                         : vk_buf_copy(0, size, &b, &o);
         if (!ok) return VK_NULL_HANDLE;
-        dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
+        if (dsb >> i & 1) {
+            sbo[i] = o;
+            dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, b, 0,
+                      gb->aliased ? gb->range : size);
+        } else
+            dw_buffer(&d, set, SNX_VKB_SSBO + i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, b, o, gb->aliased ? gb->range : size);
     }
-    if (s->si.ngbuf)
-        dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage], draw->map_off[stage],
-                  draw->map_size[stage]);
+    if (s->si.ngbuf) {
+        if (dsb >> 16 & 1) {
+            sbo[16] = draw->map_off[stage];
+            dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, draw->map_buf[stage], 0,
+                      draw->map_size[stage]);
+        } else
+            dw_buffer(&d, set, SNX_VKB_SMAP, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, draw->map_buf[stage],
+                      draw->map_off[stage], draw->map_size[stage]);
+    }
+    if (dyn) { /* in binding order: the constant buffers, the storage buffers, then the storage map (bit 16) */
+        dyn->n = 0;
+        for (int i = 0; i < 18; i++)
+            if (cbo[i] >> 32) return VK_NULL_HANDLE; /* past what a dynamic offset holds: not drawn */
+        for (int i = 0; i < 17; i++)
+            if (sbo[i] >> 32) return VK_NULL_HANDLE;
+        for (u32 m = dcb; m; m &= m - 1) dyn->off[dyn->n++] = (u32)cbo[snx_ctz32(m)];
+        for (u32 m = dsb; m; m &= m - 1) dyn->off[dyn->n++] = (u32)sbo[snx_ctz32(m)];
+    } else if (dcb | dsb)
+        return VK_NULL_HANDLE;
     VkBuffer cb;
     u64 co;
     if (stage == 4 && frame_consts(&cb, &co))
@@ -2152,6 +2190,7 @@ static struct {
     VkPipeline pipe;
     VkPipelineLayout layout; /* the one sets were bound through: another may disturb them */
     VkDescriptorSet sets[5];
+    u32 dyn[2 * VK_DYN_MAX], ndyn; /* SWR: the dynamic offsets the vertex and fragment sets were bound with */
     u32 fb, cull, front, topo, restart, discard, bias_on, dt, dw, dcmp, dbounds, st;
     VkViewport vp[GUEST_VIEWPORTS];
     VkRect2D sc[GUEST_VIEWPORTS];
@@ -3351,9 +3390,10 @@ retry:
     u32 fb = 0;
     u64 scaled = 0;
     DrawImages images = {0};
-    VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images);
+    DynOffsets vdyn = {0}, fdyn = {0};
+    VkDescriptorSet vset = stage_set(ds, 0, vs, rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, &images, &vdyn);
     VkDescriptorSet fset =
-        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images) : VK_NULL_HANDLE;
+        fs ? stage_set(ds, 4, fs, rt, zt, n, &zt_ro, &fb, &scaled, res, &storage, &images, &fdyn) : VK_NULL_HANDLE;
     /* the sets of the stages between, at their stage's index (shader_vk_set) */
     between[0] = tcs;
     between[1] = tes;
@@ -3371,7 +3411,7 @@ retry:
             bset_ok = 0;
             break;
         }
-        bset[b] = stage_set(ds, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, NULL);
+        bset[b] = stage_set(ds, b + 1, between[b], rt, zt, n, &zt_ro, NULL, NULL, NULL, &storage, NULL, NULL);
         if (!bset[b]) bset_ok = 0;
     }
     if (!vset || (fs && !fset) || !bset_ok) {
@@ -3600,10 +3640,22 @@ retry:
         memset(g_dyn.sets, 0, sizeof g_dyn.sets);
         g_dyn.layout = layout;
     }
-    if (fresh || g_dyn.sets[0] != vset || (fs && g_dyn.sets[1] != fset)) {
+    u32 dyn[2 * VK_DYN_MAX], ndyn = vdyn.n; /* SWR: their dynamic offsets, the vertex set's first */
+    memcpy(dyn, vdyn.off, vdyn.n * sizeof *dyn);
+    if (fs) {
+        memcpy(dyn + ndyn, fdyn.off, fdyn.n * sizeof *dyn);
+        ndyn += fdyn.n;
+    }
+    if (fresh || g_dyn.sets[0] != vset || (fs && g_dyn.sets[1] != fset) || g_dyn.ndyn != ndyn ||
+        memcmp(g_dyn.dyn, dyn, ndyn * sizeof *dyn)) {
         g_dyn.sets[0] = vset;
         g_dyn.sets[1] = fs ? fset : VK_NULL_HANDLE;
-        vk_descriptors_bind(cb, layout, 0, fs ? 2 : 1, sets);
+        g_dyn.ndyn = ndyn;
+        memcpy(g_dyn.dyn, dyn, ndyn * sizeof *dyn);
+        if (ndyn)
+            rec_CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, fs ? 2 : 1, sets, ndyn, dyn);
+        else
+            vk_descriptors_bind(cb, layout, 0, fs ? 2 : 1, sets);
     }
     for (b = 0; b < 3; b++)
         if (bset[b] && (fresh || g_dyn.sets[2 + b] != bset[b])) {

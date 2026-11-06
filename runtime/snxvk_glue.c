@@ -196,7 +196,7 @@ void snxvk_ini(const char* v){
 
 /* [Graphics] vk_* tunings of the native Vulkan renderer, from the .ini (main.c), into swr_settings.c at start: 1 = on;
    def = the .ini default, a value other than it goes in the log */
-static struct { const char* key; int on, def; } g_vk_tuning[]={ {"vk_fast_writeback",1,1}, {"vk_async_pipelines",0,0}, {"vk_memory_traps",0,0} };
+static struct { const char* key; int on, def; } g_vk_tuning[]={ {"vk_fast_writeback",1,1}, {"vk_async_pipelines",0,0}, {"vk_memory_traps",0,0}, {"vk_dynamic_offsets",1,1} };
 int snxvk_tuning_set(const char* k, int on){ for(unsigned i=0;i<sizeof g_vk_tuning/sizeof *g_vk_tuning;i++) if(!strcmp(k,g_vk_tuning[i].key)){ g_vk_tuning[i].on=on; return 1; } return 0; }
 void snxvk_gpu_init(void){ if(g_snxvk_want) snxv_gpu_init(); }
 

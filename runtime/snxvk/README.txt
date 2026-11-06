@@ -61,13 +61,17 @@ Local changes to upstream (marked "SWR" in the code):
   gpu/vk/render.c,      with vk_surf_snap_take above
   gpu/vk/vk.h
   gpu/vk/buffer.c       landed_hash: the write tracking's check of a landed page skips pages trapped since
+  gpu/vk/pipeline.c     vk_dynamic_offsets: the busiest constant and storage buffer bindings (by measured offset churn,
+  gpu/vk/render.c       within the device's dynamic buffer limits) are dynamic in the vertex and fragment set layouts, so
+  gpu/vk/vk.h           a draw whose buffers stay the same and only move reuses its cached set and passes the offsets at
+                        the bind; compute keeps its own plain layout. Off with descriptor buffers
   gpu/vk/ui.c           vk_menu_draw: our in-game menu (runtime/ov_vk.h, ov_vk_frame) through the overlay pipeline
                         (pipeline_new split out of pipeline_make, one pipeline per target format)
   gpu/vk/vk.h           the declarations of the above
   gpu/vk/swr_glue.c     the renderer interface as plain functions for runtime/snxvk_glue.c, so it mirrors no struct
   gpu/vk/swr_settings.c our .ini's settings (profile=1 also turns on vk_gpu_profile and vk_buffer_stats), and the
                         [Graphics] vk_* switches: vk_fast_writeback (default 1), vk_async_pipelines (default 0),
-                        vk_memory_traps (default 0)
+                        vk_memory_traps (default 0), vk_dynamic_offsets (default 1)
   gpu/vk/dlss.c, dlss_stub.c: DLSS (private builds only; dlss_stub.c in the public one). Its hooks in render.c,
                         texture.c, device.c and spirv_translate.c are not yet carried over to this commit
 

@@ -38,8 +38,10 @@ void swr_settings_gpu_profile(int on) {
 }
 /* SwitchRecomp's own native Vulkan tunings, [Graphics] vk_* keys (main.c), each 1 = on: see where they are read */
 int g_swr_fast_writeback = 1; /* writeback.c: a chunk guest memory left alone lands in one copy */
+int g_swr_dynamic_offsets = 1; /* pipeline.c: busy buffer bindings take their offsets at the bind */
 void swr_settings_tuning(const char* key, int on) {
     if (!strcmp(key, "vk_fast_writeback")) g_swr_fast_writeback = on;
+    if (!strcmp(key, "vk_dynamic_offsets")) g_swr_dynamic_offsets = on;
     if (!strcmp(key, "vk_async_pipelines")) g_settings.async_pipelines = on ? 1 : 0; /* settings.txt Async pipelines */
     if (!strcmp(key, "vk_memory_traps")) g_swr_memory_traps = on; /* memory/own_win.c: GPU results stay on the GPU */
 }

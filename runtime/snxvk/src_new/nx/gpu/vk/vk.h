@@ -328,6 +328,10 @@ int vk_zt_load(struct StateIo* io);
 void vk_zt_forget(void);
 extern u64 g_vk_finishes, g_vk_finish_ns; /* statistics: vk_finish calls and their wait (the GPU thread idles) */
 extern int g_swr_fast_writeback; /* SwitchRecomp tunings (swr_settings.c), 1 = on */
+extern int g_swr_dynamic_offsets;
+/* SWR: the vertex and fragment sets' bindings with dynamic offsets (pipeline.c), and the most a set has */
+extern u32 g_vk_dyn_cb[2], g_vk_dyn_sb[2];
+#define VK_DYN_MAX 35
 void vk_frame_next(void);                 /* ends the frame (a present): the next records in the other slot */
 void vk_frame_check(void);                /* at the start of a draw or dispatch: ends a frame that has grown too big */
 u64 vk_ring_bytes(void);                  /* ring memory every frame slot holds, spares and outgrown ones too */
@@ -376,7 +380,8 @@ void vk_memory_text(char* out, size_t size);
 u64 vk_memory_blocks(void);              /* the bytes of VMA's blocks in all heaps, any thread */
 u32 vk_frame_slot(void);                 /* the frame slot being recorded */
 /* a descriptor pool's sizes (VK_POOL_TYPES entries) for `sets` sets of the stage layouts (gpu/vk/pipeline.c) */
-#define VK_POOL_TYPES 5 /* descriptor types in a set: uniform, storage buffers, textures, images, texel buffers */
+#define VK_POOL_TYPES 7 /* descriptor types in a set: uniform, storage buffers, textures, images, texel buffers, and
+                           (SWR) uniform and storage buffers with dynamic offsets */
 void vk_pool_sizes(VkDescriptorPoolSize* sz, u32 sets);
 extern u32 g_vk_buffer_image_slots; /* storage texel buffer bindings in a set, from SNX_VKB_IMGBUF */
 /* A buffer image: the texels a buffer header describes, bound as a storage texel buffer over their copy. Raw loads

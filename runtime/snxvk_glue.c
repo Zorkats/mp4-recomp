@@ -122,20 +122,26 @@ void snx_thread_name(const char* name){
   if(!looked){ fn=(SetDesc)(void*)GetProcAddress(GetModuleHandleA("kernel32.dll"),"SetThreadDescription"); looked=1; }
   if(!fn || !name) return;
   wchar_t w[64]; if(MultiByteToWideChar(CP_UTF8,0,name,-1,w,64)>0){ w[63]=0; fn(GetCurrentThread(),w); } }
-u32 g_nown;   /* no GPU-owned memory entries: no traps */
-u32 own_lookup(u64 a, u64 n, void* out, u32 max){ (void)a; (void)n; (void)out; (void)max; return 0; }
-int own_traps(void){ return 0; }
-int own_init(const void* hooks){ (void)hooks; return -1; }   /* no traps: the renderer lands GPU writes instead (owned.c) */
-int own_begin(u64 a, u64 n, void* r, u64 o){ (void)a; (void)n; (void)r; (void)o; return -1; }
-void own_drop(u64 a, u64 n){ (void)a; (void)n; }
-int own_hash(u64 a, u64 n, u64* h){ (void)a; (void)n; (void)h; return -1; }
-void own_acquire(u64 a, u64 n){ (void)a; (void)n; }
-u32 own_stage(u64 a, u64 n, u8* dst, void* out, u32 max){ (void)a; (void)n; (void)dst; (void)out; (void)max; return 0; }
-u64 own_landings(void){ return 0; }
-/* syncpoint increments made under the renderer's lock: ScarletNX defers their wake-ups because its kernel lock can wait
-   on a memory trap answered under that lock; ours can't, so they wake at once */
-void syncpt_add_quiet(u32 id, u32 n){ extern void syncpt_incr(u32); while(n--) syncpt_incr(id); }
-void syncpt_events(void){}
+/* syncpoint increments made under the renderer's lock (display.c, release.c). With [Graphics] vk_memory_traps=1 a
+   guest thread can fault on a trapped page (snxvk memory/own_win.c) while it holds the kernel lock, and its landing
+   waits for vk_lock: the wake-ups, which take that lock (kevent_signal), wait until vk_lock is let go (syncpt_events,
+   from vk_let_go), and a landing's own go to a helper thread, as its faulting thread may hold the kernel lock itself.
+   Without traps they wake at once, as before */
+extern int snxv_own_traps(void); extern int snxv_own_in_fault(void);
+static _Thread_local int t_events_due; static volatile LONG g_events_helper_due; static HANDLE g_events_ev;
+static DWORD WINAPI events_helper(void* p){ (void)p; extern void nv_events_check(void);
+  for(;;){ WaitForSingleObject(g_events_ev,INFINITE); while(InterlockedExchange(&g_events_helper_due,0)) nv_events_check(); } }
+void syncpt_add_quiet(u32 id, u32 n){
+  extern void syncpt_incr(u32); extern void syncpt_bump(u32,u32); extern void snxvk_kick(void);
+  if(!snxv_own_traps()){ while(n--) syncpt_incr(id); return; }
+  if(!n) return;
+  syncpt_bump(id,n); snxvk_kick(); t_events_due=1; }
+void syncpt_events(void){
+  extern void nv_events_check(void);
+  if(!t_events_due) return;
+  t_events_due=0;
+  if(g_events_ev && snxv_own_in_fault()){ InterlockedExchange(&g_events_helper_due,1); SetEvent(g_events_ev); return; }
+  nv_events_check(); }
 void loader_segments(void* each, void* ctx){ (void)each; (void)ctx; }
 /* the shipped-shader pass's RomFS readers (shipped_pass.c, prepare_shaders on): only system/shd/*.bshdat
    is listed (the OpenGL pre-build reads the same; Metroid Prime 4 has none, so it finds nothing) */
@@ -190,7 +196,7 @@ void snxvk_ini(const char* v){
 
 /* [Graphics] vk_* tunings of the native Vulkan renderer, from the .ini (main.c), into swr_settings.c at start: 1 = on;
    def = the .ini default, a value other than it goes in the log */
-static struct { const char* key; int on, def; } g_vk_tuning[]={ {"vk_fast_writeback",1,1}, {"vk_async_pipelines",0,0} };
+static struct { const char* key; int on, def; } g_vk_tuning[]={ {"vk_fast_writeback",1,1}, {"vk_async_pipelines",0,0}, {"vk_memory_traps",0,0} };
 int snxvk_tuning_set(const char* k, int on){ for(unsigned i=0;i<sizeof g_vk_tuning/sizeof *g_vk_tuning;i++) if(!strcmp(k,g_vk_tuning[i].key)){ g_vk_tuning[i].on=on; return 1; } return 0; }
 void snxvk_gpu_init(void){ if(g_snxvk_want) snxv_gpu_init(); }
 
@@ -224,6 +230,8 @@ int snxvk_start(void){
        GPU thread 98% busy) - it runs without, as when OpenGL is chosen */
     g_ww_ok=0; return 0; }
   g_snxvk_on=1;
+  if(snxv_own_traps() && (g_events_ev=CreateEventW(NULL,FALSE,FALSE,NULL))){
+    HANDLE t=CreateThread(NULL,0,events_helper,NULL,0,NULL); if(t) CloseHandle(t); else { CloseHandle(g_events_ev); g_events_ev=NULL; } }
   LOG("renderer: native Vulkan (experimental, ScarletNX renderer; shaders translated to SPIR-V)\n");
   return 1; }
 
@@ -236,7 +244,13 @@ void snxvk_channel_close(u32 id){ if(g_snxvk_on){ snxv_gpu_release_retire(id); s
 volatile LONG64 snxvk_gmmu_gen; volatile LONG snxvk_gmmu_busy;
 void snxvk_map_begin(u64 gva, u64 size){ InterlockedIncrement(&snxvk_gmmu_busy); InterlockedIncrement64(&snxvk_gmmu_gen); if(g_snxvk_on && snxv_g_gpu_mapping_begin) snxv_g_gpu_mapping_begin(gva,size,0); }
 void snxvk_map_end(u64 gva, u64 size){ InterlockedIncrement64(&snxvk_gmmu_gen); InterlockedDecrement(&snxvk_gmmu_busy); if(!g_snxvk_on) return; snxv_gpu_mem_written(gva,size); if(snxv_g_gpu_mapping_end) snxv_g_gpu_mapping_end(); }
-void snxvk_cpu_map_begin(u64 addr, u64 size){ if(g_snxvk_on && snxv_g_gpu_mapping_begin) snxv_g_gpu_mapping_begin(addr,size,1); }
+/* guest memory unmapped (mem.c): what the GPU held of it lands nowhere (own_drop opens its trapped pages before the
+   decommit); under vk_lock, which mapping_begin holds until map_end */
+void snxvk_cpu_map_begin(u64 addr, u64 size){ if(!g_snxvk_on) return; if(snxv_g_gpu_mapping_begin) snxv_g_gpu_mapping_begin(addr,size,1);
+  extern void snxv_own_drop(u64,u64); snxv_own_drop(addr,size); }
+/* the runtime is about to touch guest memory itself (file reads and writes, ioctl buffers): what the GPU holds of those
+   pages lands first, as a system call on a trapped page fails instead of faulting */
+void snxvk_own_acquire(u64 a, u64 n){ extern void snxv_own_acquire(u64,u64); if(g_snxvk_on && n) snxv_own_acquire(a,n); }
 void snxvk_cpu_map_end(u64 addr, u64 size, int changed){ if(!g_snxvk_on) return; if(snxv_g_gpu_mapping_end) snxv_g_gpu_mapping_end(); if(changed) snxv_gpu_mem_changed(addr,size); }
 /* frame pacing, as our GL presentation thread does it (glq.c e_swap): the present waits for its deadline, so images
    reach the swapchain on an even cadence instead of whenever the game thread finishes (measured 12-20 ms spread
@@ -309,6 +323,7 @@ void snxvk_channel_close(u32 id){ (void)id; }
 void snxvk_map_begin(u64 g, u64 s){ (void)g;(void)s; }
 void snxvk_map_end(u64 g, u64 s){ (void)g;(void)s; }
 void snxvk_cpu_map_begin(u64 a, u64 s){ (void)a;(void)s; }
+void snxvk_own_acquire(u64 a, u64 n){ (void)a;(void)n; }
 void snxvk_cpu_map_end(u64 a, u64 s, int c){ (void)a;(void)s;(void)c; }
 void snxvk_present(u64 a, u32 w, u32 h, u32 p, u32 l, u32 b, u32 f){ (void)a;(void)w;(void)h;(void)p;(void)l;(void)b;(void)f; }
 int snxvk_pacing(void){ return 0; }

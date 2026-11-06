@@ -47,12 +47,27 @@ Local changes to upstream (marked "SWR" in the code):
   gpu/vk/buffer.c       vk_ww_landed_as: the pages of such a landing noted as landed, so its own writes, which the next
                         epoch's scan reports, don't count as the CPU's while their bytes are unchanged (upstream notes
                         a landing only through the alias pool's mirror, which our runtime lacks)
+  memory/own_win.c      GPU-owned guest memory for Windows ([Graphics] vk_memory_traps=1, default 0), in place of
+                        upstream's own.c, which reads and lands through the alias pool's mirror our runtime lacks.
+                        Owned pages are PAGE_NOACCESS; a CPU access to one faults into a vectored handler that lands
+                        what the GPU holds of it: the GPU copy is read into host buffers first, then every other thread
+                        is suspended for the copy into the opened pages (whole pages only, so no other bytes on them can
+                        change meanwhile). own_read_open reads a range only when none of its pages is trapped
+  memory/own.h          its additions (own_read_open, own_in_fault, own_stop_stats, g_swr_memory_traps)
+  gpu/vk/owned.c        the landing's pages noted as landed from guest memory itself (landed_live; upstream reads them
+                        through the mirror); vk_own_res_ref and vk_own_cpu_touched from upstream commit 504dc04f
+  gpu/vk/image_out.c,   upstream commit 504dc04f (draw storage images kept on the GPU, guest memory owned by the image
+  gpu/vk/surface.c,     instead of a copy of its bytes from before each draw), with traps on only; render.c merges it
+  gpu/vk/render.c,      with vk_surf_snap_take above
+  gpu/vk/vk.h
+  gpu/vk/buffer.c       landed_hash: the write tracking's check of a landed page skips pages trapped since
   gpu/vk/ui.c           vk_menu_draw: our in-game menu (runtime/ov_vk.h, ov_vk_frame) through the overlay pipeline
                         (pipeline_new split out of pipeline_make, one pipeline per target format)
   gpu/vk/vk.h           the declarations of the above
   gpu/vk/swr_glue.c     the renderer interface as plain functions for runtime/snxvk_glue.c, so it mirrors no struct
   gpu/vk/swr_settings.c our .ini's settings (profile=1 also turns on vk_gpu_profile and vk_buffer_stats), and the
-                        [Graphics] vk_* switches: vk_fast_writeback (default 1), vk_async_pipelines (default 0)
+                        [Graphics] vk_* switches: vk_fast_writeback (default 1), vk_async_pipelines (default 0),
+                        vk_memory_traps (default 0)
   gpu/vk/dlss.c, dlss_stub.c: DLSS (private builds only; dlss_stub.c in the public one). Its hooks in render.c,
                         texture.c, device.c and spirv_translate.c are not yet carried over to this commit
 

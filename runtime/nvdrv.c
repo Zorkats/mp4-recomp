@@ -34,7 +34,7 @@ u64 gmmu_run(u64 gva, u64 max, u64* cpu){
     if(!e || (e&~0xFFFull)!=want) break; n+=0x1000; want+=0x1000; }
   return n<max? n : max; }
 
-extern int g_snxvk_on; extern void snxvk_map_begin(u64,u64), snxvk_map_end(u64,u64), snxvk_kick(void);
+extern int g_snxvk_on; extern void snxvk_map_begin(u64,u64), snxvk_map_end(u64,u64), snxvk_kick(void), snxvk_own_acquire(u64,u64);
 extern void snxvk_submit(const void*,u32,u32,u32,u32,u32,u32);
 /* The mapped runs {gva, cpu, size} as an index from the guest side, for the native Vulkan renderer (ScarletNX's
    gmmu_aliases): the same guest memory can be mapped at several GPU addresses, and a write known by its guest address
@@ -109,7 +109,9 @@ static u32 syncpt[256]; static u32 syncpt_max[256]; static PCond g_sync_cv; stat
 
 u32 syncpt_read(u32 id){ return __atomic_load_n(&syncpt[id&255],__ATOMIC_SEQ_CST); }
 
-void syncpt_incr(u32 id){ pm_lock(&g_sync_lk); syncpt[id&255]++; pc_broadcast(&g_sync_cv); pm_unlock(&g_sync_lk); snxvk_kick();
+/* the value raised by n, its waiters woken; the kernel events it reaches are the caller's (nv_events_check) */
+void syncpt_bump(u32 id, u32 n){ pm_lock(&g_sync_lk); syncpt[id&255]+=n; pc_broadcast(&g_sync_cv); pm_unlock(&g_sync_lk); }
+void syncpt_incr(u32 id){ syncpt_bump(id,1); snxvk_kick();
   extern void nv_events_check(void); nv_events_check(); }
 
 int syncpt_wait(u32 id, u32 thresh, i64 timeout){
@@ -323,7 +325,7 @@ static int nvdrv_disp(SvcObj* o, IpcCtx* c){
         case DEV_AS: r=ioctl_as(cmd,tmp,(u32)(isz>nb?isz:nb),(c->cmd==12&&ea)? GP(ea):NULL,(u32)es); break;
         case DEV_CTRL: r=ioctl_ctrl(cmd,tmp,nb); break;
         case DEV_CTRLGPU: r=ioctl_ctrlgpu(cmd,tmp,nb,(c->cmd==12&&ea)? GP(ea):NULL,(u32)es); break;
-        case DEV_GPU: r=ioctl_gpu(f,cmd,tmp,(u32)(isz>nb?isz:nb),ea? GP(ea):NULL,(u32)es); break;
+        case DEV_GPU: if(ea) snxvk_own_acquire(ea,es); r=ioctl_gpu(f,cmd,tmp,(u32)(isz>nb?isz:nb),ea? GP(ea):NULL,(u32)es); break;
         case DEV_NVDEC: r=host1x_ioctl(0,(u32)fd,cmd,tmp,(u32)(isz>nb?isz:nb)); break;
         case DEV_VIC: r=host1x_ioctl(1,(u32)fd,cmd,tmp,(u32)(isz>nb?isz:nb)); break;
         default: WARN("nvdrv: ioctl %x to unknown device\n",cmd); break;

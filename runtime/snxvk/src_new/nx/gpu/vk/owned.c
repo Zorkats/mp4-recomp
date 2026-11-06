@@ -85,6 +85,7 @@ static void res_release(void* res) {
     vk_unlock();
     free(r);
 }
+void vk_own_res_ref(VkOwnRes* r) { res_retain(r); }
 void vk_own_res_unref(VkOwnRes* r) { res_release(r); }
 
 /* every write the GPU did so far visible to copies (before), the copies' writes to the host (after) */
@@ -121,6 +122,9 @@ static void cpu_read_note(u64 cpu, u64 size) {
         g_owned.cpu_read[slot].granule = g + 1;
         g_owned.cpu_read[slot].present = g_vk_present;
     }
+}
+void vk_own_cpu_touched(u64 cpu, u64 size) {
+    if (size) cpu_read_note(cpu, size);
 }
 int vk_own_cpu_read(u64 cpu, u64 size, u32 presents) {
     for (u64 g = cpu >> 16, e = (cpu + size - 1) >> 16, k = 0; g <= e && k < 256; g++, k++) {
@@ -252,6 +256,9 @@ static void own_land(const OwnRange* r, u8* const* dst, u32 n) {
 }
 
 static u32 lock_owner(void) { return vk_lock_owner(); }
+/* SWR: our own.c (memory/own_win.c) has no mirror: the landed pages are read where they are, bytes being the ones the
+   landing left (a CPU write since then changes them, and counts) */
+static void landed_live(u64 cpu, u64 size, const u8* bytes) { vk_ww_landed_as(cpu, size, GP(cpu), bytes); }
 
 int vk_own_init(void) {
     /* vk_lock and vk_unlock themselves, not g_vklock: the outermost unlock also signals what the hold's releases
@@ -262,7 +269,7 @@ int vk_own_init(void) {
                   .busy_tid = lock_owner,
                   .lock = vk_lock,
                   .unlock = vk_unlock,
-                  .landed = vk_ww_landed};
+                  .landed = landed_live}; /* SWR: vk_ww_landed reads them through the mirror */
     g_owned.traps = !own_init(&h);
     return g_owned.traps ? 0 : -1;
 }

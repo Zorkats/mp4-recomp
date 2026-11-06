@@ -1453,6 +1453,14 @@ static void landed_sort(void) {
     g_wland_n = n;
     g_wland_sorted = 1;
 }
+/* SWR: a landed page's bytes hashed where they are (no mirror), unless an owner traps the page again: then they
+   can't be read here (this holds the write tracking's locks, and a landing takes vk_lock), and the report counts */
+static u64 landed_hash(const u8* bytes) {
+    u8 page[4096];
+    if (!own_any()) return vk_hash(bytes, 4096);
+    if (own_read_open((u64)(bytes - g_mem), 4096, page)) return ~0ull;
+    return vk_hash(page, 4096);
+}
 /* what a scan found written, [o, e), marked but for the landed pages on it that still hold the landing's bytes. Every
    entry on it goes (no bytes until ww_take_scanned drops them) */
 static void ww_mark_scanned(u64 o, u64 e) {
@@ -1468,7 +1476,7 @@ static void ww_mark_scanned(u64 o, u64 e) {
     for (u32 i = lo; i < g_wland_n && g_wland[i].page << 12 < e; i++) {
         u64 a = g_wland[i].page << 12;
         if (!g_wland[i].bytes) continue;
-        if (a + 4096 <= e && vk_hash(g_wland[i].bytes, 4096) == g_wland[i].hash) {
+        if (a + 4096 <= e && landed_hash(g_wland[i].bytes) == g_wland[i].hash) {
             if (a > at) ww_mark_range(at, a);
             at = a + 4096;
         }
@@ -2830,6 +2838,15 @@ void vk_buf_frame(void) {
             "dropped within 2 presents (data that changed again)\n",
             (unsigned long long)g_own_late, (unsigned long long)g_own_now, (unsigned long long)g_own_churn); /* SWR */
         g_own_late = g_own_now = g_own_churn = 0;
+        vk_gfx_image_report();
+        if (own_traps()) { /* SWR: own_win.c's landings, each a stop of every other thread for its copy */
+            static u64 last_land, last_stops, last_ns;
+            u64 land = own_landings(), stops = 0, ns = 0;
+            own_stop_stats(&stops, &ns);
+            LOG("vulkan: owned memory landed %llu times, other threads stopped %llu times for %.1f ms\n",
+                (unsigned long long)(land - last_land), (unsigned long long)(stops - last_stops), (ns - last_ns) / 1e6);
+            last_land = land, last_stops = stops, last_ns = ns;
+        }
         g_vb_lookups = g_vb_probes = 0;
         g_copy_uncached = g_copy_stage = g_copy_owned = g_copy_zero = g_copy_calls = g_copy_peak = g_read_bound =
             g_owned_bound = 0;

@@ -2,6 +2,7 @@
    shaderdec/ folder), set by snxvk_glue.c before the renderer starts. Paths this build leaves out stay off: FFmpeg
    video decode, and the shipped-shader pass unless prebuild_shaders asks for it. */
 #include "snx_settings.h"
+#include "nx/memory/own.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,4 +41,5 @@ int g_swr_fast_writeback = 1; /* writeback.c: a chunk guest memory left alone la
 void swr_settings_tuning(const char* key, int on) {
     if (!strcmp(key, "vk_fast_writeback")) g_swr_fast_writeback = on;
     if (!strcmp(key, "vk_async_pipelines")) g_settings.async_pipelines = on ? 1 : 0; /* settings.txt Async pipelines */
+    if (!strcmp(key, "vk_memory_traps")) g_swr_memory_traps = on; /* memory/own_win.c: GPU results stay on the GPU */
 }

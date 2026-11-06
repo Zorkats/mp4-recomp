@@ -62,6 +62,13 @@ void own_drop(u64 addr, u64 size);
 /* landings so far (each a wait for the GPU: the statistics count them), and whether own_init found traps */
 u64 own_landings(void);
 int own_traps(void);
+/* SWR (own_win.c, Windows without a mirror): [addr, addr + size) copied to dst when none of its pages is trapped: 0,
+   else -1 and nothing copied, for a reader that may not land; whether this thread is landing for its own fault; the
+   threads stopped for landings so far and the time it took; and the [Graphics] vk_memory_traps switch */
+int own_read_open(u64 addr, u64 size, u8* dst);
+int own_in_fault(void);
+void own_stop_stats(u64* stops, u64* ns);
+extern int g_swr_memory_traps;
 /* the entries own.c holds, changed under its lock with __atomic_store_n */
 extern u32 g_nown;
 /* whether anything is owned: the common case's test, without a lock */

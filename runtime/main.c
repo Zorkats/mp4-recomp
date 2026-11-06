@@ -370,6 +370,7 @@ static const IniOpt INI_GRAPHICS[]={
   {"shadows","1","0 = disable shadow maps (more FPS)"},
   {"vk_fast_writeback","1","native Vulkan: 1 = a shader's storage image lands in guest memory a block at a time where the game left\n;   that memory alone (the per-byte merge held the frame back); 0 = byte by byte, as ScarletNX does"},
   {"vk_async_pipelines","0","native Vulkan: 1 = a draw whose shader isn't built yet is skipped while it builds, instead of the game\n;   waiting for it: no hitch where a new effect first appears, but it shows up a few frames late. 0 = wait"},
+  {"vk_memory_traps","0","native Vulkan, EXPERIMENTAL: 1 = what the GPU's shaders write to game memory stays on the GPU until the CPU\n;   touches it (its pages are trapped), instead of being copied back every frame. 0 = copied back"},
   {"renderer","opengl","opengl, or vulkan = the game still renders with OpenGL but Vulkan puts the frames on screen\n;   (falls back to OpenGL output if the GPU driver can't share images between the two; restart required),\n;   or vulkan_native = EXPERIMENTAL native Vulkan renderer from ScarletNX (GPL-3.0; falls back to OpenGL if it can't start)"},
 #ifndef SWR_RELEASE   /* the public release: no DLSS (GPL) and no frame generation in that build */
   {"dlss","0","1 = NVIDIA DLAA anti-aliasing (renderer=opengl or vulkan_native, RTX GPU, nvngx_dlss.dll in the game folder):\n;   DLSS at the internal resolution with the game's own motion vectors; the HUD is untouched. 0 = off"},

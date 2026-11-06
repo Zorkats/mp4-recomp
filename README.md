@@ -109,25 +109,31 @@ downloaded to a PC.
 ## Controls and the in-game menu
 
 - Controllers work through SDL2 (tested with an Xbox Series X controller; **ZL is the left trigger**).
-- **Mouse and keyboard** work together with a controller, on Linux and Windows:
+- **Mouse and keyboard** work together with a controller, on Linux and Windows. The defaults follow PrimeHack:
 
   | Action | Key or button |
   |---|---|
-  | Move (left stick) | **W A S D** |
+  | Move (left stick) | **W A S D**, or **arrow keys** |
   | Camera (right stick) | **the mouse**, or **I J K L** |
-  | Shoot (ZR) | **left click**, or **3** |
-  | Lock on (ZL) | **right click**, or **1** |
-  | Missile (R) | **middle click**, or **E** |
-  | A / B / X / Y | **X** or **Space** / **Z** / **C** / **V** |
+  | Fire, charge, interact (A) | **left click**, or **Enter** |
+  | Lock on, grapple, scan (ZL) | **right click**, or **Shift** |
+  | Secondary weapon (R) | **middle click**, or **F** |
+  | Jump, dodge (B) | **Space** |
+  | Morph ball (Y) | **Ctrl** |
+  | Visors, spring ball (X) | **E**, or **Alt** |
   | L | **Q** |
-  | + / - | **Enter** / **Backspace** |
-  | D-pad | **arrow keys** |
+  | D-pad right, left, up, down | **1**, **2**, **3**, **4** |
+  | + | **R** |
+  | - (pause) | **Tab**, or **`** |
 
   While you play, the cursor is hidden and kept in the window. Opening the in-game menu (F1) or switching to another
-  window frees it. The menu's **CONTROLS** page has the mouse settings: mouse look on or off, sensitivity, invert up and
-  down, and the starting push (how far the stick is pushed by the smallest mouse movement, past the game's dead zone).
-  `mouse_buttons` in the `.ini` sets what the left, right, middle, back and forward buttons press (default
-  `zr,zl,r,-,-`, `-` for nothing).
+  window frees it. The menu's **CONTROLS** page rebinds every button: select one, then press a key for it (Shift,
+  Ctrl or Alt held with it make a chord such as `Shift+1`; pressing a key the button already has takes it off). The
+  same page has the mouse buttons and the mouse settings: mouse look on or off, sensitivity, invert up and down, and
+  the starting push (how far the stick is pushed by the smallest mouse movement, past the game's dead zone).
+  In the `.ini`, `[Input]` has a `key_<button>=` line per button (`key_a=Enter`, `key_dpad_right=1, Shift+F`, `-` for
+  none), and `mouse_buttons` sets what the left, right, middle, back and forward buttons press (default
+  `a,zl,r,-,-`, `-` for nothing). On Windows with `fast_forward=1`, **Tab** toggles fast forward instead.
 - **F1** or the Home / Guide button opens the in-game menu (settings, cheats, FOV, upscaling).
 - **F3** saves a screenshot to `captures/`, **F4** toggles the 60 fps limit, **F5** writes a frame trace for bug
   reports, **F11** toggles fullscreen.

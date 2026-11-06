@@ -39,7 +39,8 @@ GCC, a Play / settings screen, and an in-game menu (F1 or the Home / Guide butto
 | **Cheats** in the Atmosphere / dmnt format (the `.txt` files Atmosphere, Ryujinx and Yuzu use), on/off per cheat in the in-game menu, reloaded when the file changes | `runtime/cheats.c`, menu: **Cheats** page | built and unit-tested (`bash linux/cheats_test.sh`) |
 | **FOV slider** (percent of the game's own FOV, live) | `runtime/cheats.c` FOV hook, `beyond/fov_hooks.txt` | mechanism built and tested; the camera address for Prime 4 still has to be found |
 | **AMD FidelityFX FSR 1** upscaling (EASU + RCAS) with a sharpness slider | `runtime/gpu_gl.c`, `third_party/fsr1` (MIT) | works: runs in game on radeonsi; on a fixed test picture EASU + RCAS give smooth edges where bilinear shows steps (mean gradient 10.1 bilinear, 11.3 FSR) |
-| **Mouse and keyboard** on Linux and Windows: one shared layer, mouse look on the right stick, mouse buttons mapped to controller buttons, the cursor locked while playing | `runtime/input_kbm.c`, `runtime/backend_win32.c`, `runtime/backend_x11.c`, menu: **Controls** | built and unit-tested (`bash linux/input_kbm_test.sh`); not yet tried in the game |
+| **Mouse and keyboard** on Linux and Windows: one shared layer, PrimeHack-style keys, every button rebindable (`[Input] key_*`, press-a-key in the menu), mouse look on the right stick, mouse buttons mapped to controller buttons, the cursor locked while playing | `runtime/input_kbm.c`, `runtime/backend_win32.c`, `runtime/backend_x11.c`, menu: **Controls** | built and unit-tested (`bash linux/input_kbm_test.sh`); rebinding not yet tried in the game; the X11 side not yet compiled |
+| **In-game menu under `renderer=vulkan_native`**: the same ImGui menu, its draw data drawn by the native renderer's overlay pipeline at each present (over the present pass's output, or before it with HDR) | `runtime/ov_vk.h`, `runtime/beyond_ui/ov.cpp` (`ov_vk_frame`), `runtime/snxvk/src_new/nx/gpu/vk/ui.c` (`vk_menu_draw`) | builds; not yet tried in the game |
 | **Windows build** from the source tree with MSYS2 or winlibs GCC (`build.bat`), and setup from the repository (`SWR_RECOMPILER`, `CC`) | `build.bat`, `work-profiler/*.py`, `runtime/beyond_ui/fe_sys.cpp`, `beyond/beyond_setup.py` | builds, setup screen starts; the game not yet played on Windows |
 | Project naming: Metroid Prime 4 Recomp, `~/.local/share/MetroidPrime4Recomp`, `MP4_RECOMP_HOME` (an older `MetroidBeyondRecomp` install is moved on first start) | everywhere | done |
 
@@ -225,12 +226,21 @@ Setup from the source tree, without a release's `recompiler\` folder:
 input, `ClipCursor`, a hidden cursor) and `backend_x11.c` (`XGrabPointer` with a blank cursor, warped back to the centre
 when it strays) only translate their events into its key codes and mouse deltas. Mouse movement over one 60 Hz poll
 becomes right-stick deflection: `mouse_deadzone` percent for the smallest movement, a full push at 40 counts at 100 %
-`mouse_sensitivity`. The keyboard table is unchanged from upstream. `bash linux/input_kbm_test.sh` tests the mapping on
-its own (it also builds on Windows: `gcc -I runtime linux/input_kbm_test.c runtime/input_kbm.c`).
+`mouse_sensitivity`. `bash linux/input_kbm_test.sh` tests the mapping on its own (it also builds on Windows:
+`gcc -I runtime linux/input_kbm_test.c runtime/input_kbm.c`).
 
-Settings (`[Input]`): `mouse_look` (was `mouse_aim`, still read), `mouse_sensitivity` (10 to 1000), `mouse_invert_y`,
-`mouse_deadzone` (0 to 50) and `mouse_buttons` (left, right, middle, back, forward; default `zr,zl,r,-,-`). An `.ini`
-that still has the old default `y,l,r,-,-` is moved to the new one on start.
+Keys: the `ACTIONS` table in `input_kbm.c` has one row per controller button or stick direction, with its `.ini` key
+(`key_a` ... `key_rstick_right`) and its PrimeHack-style default. A binding is a comma-separated list of chords; a chord
+is up to four key names joined with `+` (`Shift+1`). A chord counts while all its keys are held, unless a longer held
+chord contains it, so `Shift+1` doesn't also press what `1` does. Letters and digits follow the keyboard layout;
+punctuation and the keypad are named by their place on a US keyboard (Windows scan codes, X11 evdev keycodes). The
+in-game menu's CONTROLS page rebinds with `kbm_capture_begin` / `kbm_capture_take`: the window backends hand every key
+to `kbm_capture_key` first, so the key being bound doesn't also act in the menu.
+
+Settings (`[Input]`): `key_*`, `mouse_look` (was `mouse_aim`, still read), `mouse_sensitivity` (10 to 1000),
+`mouse_invert_y`, `mouse_deadzone` (0 to 50) and `mouse_buttons` (left, right, middle, back, forward; default
+`a,zl,r,-,-`). An `.ini` with the older default `y,l,r,-,-` is moved to the new one on start, and so is one with
+`zr,zl,r,-,-` that has no `key_*` lines yet.
 
 ## Credits
 

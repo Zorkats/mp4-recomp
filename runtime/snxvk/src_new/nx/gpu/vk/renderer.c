@@ -23,6 +23,7 @@
 #include "nx/runtime/guest_stats.h"
 #include "nx/gpu/vk/vk.h"
 #include "nx/gpu/vk/descriptors.h"
+VkResult vk_sc_acquire(VkSwapchainKHR sc, u64 timeout, VkSemaphore sem, u32* idx); /* SWR: fsr_fg.c, dlss_stub.c */
 #include "nx/memory/mem.h"
 #include "nx/memory/own.h"
 #include "nx/gpu/vk/pending_pages.h"
@@ -431,7 +432,8 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         /* no wait: vk_lock is held (guest threads mapping memory take it too), and the game's pace is present_pace's.
            Every image still on the display or queued for it (FIFO behind) leaves this frame unshown */
         pm_lock(&g_vk.sc_lock);
-        VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, 0, acq, VK_NULL_HANDLE, &idx);
+        /* SWR: AMD's frame generation swapchain or the plain one; AMD's waits a little for an image (fsr_fg.c) */
+        VkResult r = vk_sc_acquire(g_vk.swapchain, 0, acq, &idx);
         pm_unlock(&g_vk.sc_lock);
         if (r == VK_NOT_READY || r == VK_TIMEOUT) {
             /* the game faster than the display (vsync=1 with fps_limit over its refresh, or a 59.94 Hz one) */
@@ -578,6 +580,7 @@ static void show(Surf* src, u32 fw, u32 fh, u32 transform, int game, u64 release
         g_vk_present++;
         stats_frame(now_ns);
         if (g_vk_present == 1 || g_vk_present % 600 == 0) guest_stats_log(now_ns, g_vk_present);
+        { void vk_dlss_frame(void); vk_dlss_frame(); } /* SWR: DLSS (dlss.c): this frame's targets and motion vectors */
         vk_mem_present();
         if (g_last) vk_surf_touch(g_last); /* what screenshots read stays */
         vk_tex_frame();

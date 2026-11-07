@@ -149,13 +149,27 @@ typedef struct {
         separateStencilMaskRef, shaderSampleRateInterpolationFunctions, tessellationIsolines, tessellationPointMode,
         triangleFans, vertexAttributeAccessBeyondStride;
 } PortabilityFeatures;
+/* SWR: DLSS (dlss.c, dlss_stub.c): NGX's extensions, its device extensions and feature chain, and its init */
+void vk_dlss_instance_exts(const char** ext, u32* next, u32 max);
+void vk_dlss_device_exts(VkPhysicalDevice pd, const char** ext, u32* next, u32 max);
+const void* vk_dlss_device_chain(const void* next);
+int vk_dlss_init(void);
+/* SWR: FSR frame generation (fsr_fg.c, dlss_stub.c): two more queues of the graphics family for AMD's swapchain, which
+   stands in for the real one; the swapchain calls go through vk_sc_* (the plain ones unless it is AMD's) */
+u32 vk_fsr_fg_queues(void);
+void vk_fsr_fg_device(VkQueue present, VkQueue acquire);
+int vk_fsr_fg_ready(void);
+VkResult vk_fsr_fg_swapchain(const VkSwapchainCreateInfoKHR* ci, VkSwapchainKHR* out);
+void vk_fsr_fg_wait_presents(void);
+VkResult vk_sc_images(VkSwapchainKHR sc, u32* n, VkImage* img);
+void vk_sc_destroy(VkSwapchainKHR sc);
 /* MoltenVK (macOS, iOS) is a portability driver: the loader lists it only for an instance that asks for those */
 static int create_instance(void) {
     u32 nbe = 0;
     const char* const* be = g_opt_headless ? NULL : backend_vk_extensions(&nbe);
     /* the window's, and the surface's present timing capabilities (VK_EXT_present_timing) are asked through
        VK_KHR_get_surface_capabilities2 */
-    const char* ext[18]; /* SWR: one more for VK_EXT_swapchain_colorspace */
+    const char* ext[24]; /* SWR: the window's 16, the surface's caps2, NGX's and the HDR colour space */
     u32 next = 0;
     for (u32 i = 0; i < nbe && next < 16; i++) ext[next++] = be[i];
     if (nbe > 16) WARN("vulkan: the window backend wants %u instance extensions, only 16 are taken\n", nbe);
@@ -163,6 +177,7 @@ static int create_instance(void) {
         ext[next++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
         g_vk.has_surface_caps2 = 1;
     }
+    vk_dlss_instance_exts(ext, &next, (u32)(sizeof ext / sizeof ext[0])); /* SWR: DLSS (dlss.c) */
     /* SWR: HDR output (hdr.c) needs the HDR colour spaces; only asked for when hdr=1 and the loader has it */
     extern int g_opt_hdr;
     if (g_opt_hdr && !g_opt_headless && snx_vk_has_instance_extension("VK_EXT_swapchain_colorspace")) {
@@ -311,10 +326,13 @@ static int create_device(void) {
 
     /* compute gets a queue of its own: of a compute-only family, or else a second one of the graphics family */
     int second = g_vk.compute_family == g_vk.gfx_family && gfx_queues >= 2;
-    float prio[2] = {1.0f, 1.0f};
+    /* SWR: and FSR frame generation's swapchain two of its own after those, when the family has them (fsr_fg.c) */
+    u32 fg_base = second ? 2 : 1, fgq = vk_fsr_fg_queues();
+    if (gfx_queues < fg_base + fgq) fgq = 0;
+    float prio[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     VkDeviceQueueCreateInfo qci[3] = {{.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                                        .queueFamilyIndex = g_vk.gfx_family,
-                                       .queueCount = second ? 2 : 1,
+                                       .queueCount = fg_base + fgq,
                                        .pQueuePriorities = prio},
                                       {.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
                                        .queueFamilyIndex = g_vk.compute_family,
@@ -900,6 +918,10 @@ static int create_device(void) {
                                               .queueFamilyIndex = g_vk.video_family,
                                               .queueCount = 1,
                                               .pQueuePriorities = prio};
+    /* SWR: DLSS's device extensions and its feature chain (dlss.c); after every extension above, so transform feedback
+       is not asked twice */
+    vk_dlss_device_exts(g_vk.phys, ext, &next, (u32)(sizeof g_vk.dev_ext / sizeof g_vk.dev_ext[0]));
+    chain = (void*)vk_dlss_device_chain(chain);
     VkDeviceCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
                               .pNext = chain,
                               .queueCreateInfoCount = nq,
@@ -922,6 +944,14 @@ static int create_device(void) {
     pm_lock_announce(&g_vklock, "vulkan"); /* the device's calls, every thread's */
     vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, 0, &g_vk.gfx);
     vkGetDeviceQueue(g_vk.dev, g_vk.compute_family, second ? 1 : 0, &g_vk.compute);
+    {
+        VkQueue fg_present = VK_NULL_HANDLE, fg_acquire = VK_NULL_HANDLE;
+        if (fgq) {
+            vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, fg_base, &fg_present);
+            vkGetDeviceQueue(g_vk.dev, g_vk.gfx_family, fg_base + 1, &fg_acquire);
+        }
+        vk_fsr_fg_device(fg_present, fg_acquire); /* none: frame generation off */
+    }
     VmaVulkanFunctions vf = {.vkGetInstanceProcAddr = vkGetInstanceProcAddr,
                              .vkGetDeviceProcAddr = vkGetDeviceProcAddr};
     vk_mem_init(sparse_queue);
@@ -935,6 +965,7 @@ static int create_device(void) {
                                   .flags = has_budget ? VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT : 0};
     if (g_vk.has_descriptor_buffers) vai.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     if (!VK_OK(vmaCreateAllocator(&vai, &g_vk.vma))) return 0;
+    vk_dlss_init(); /* SWR: NGX, after the device (dlss.c); 0 = no DLSS this run */
     __atomic_store_n(&g_vma_ready, 1, __ATOMIC_RELEASE);
     vk_uma_init();
     {
@@ -971,7 +1002,7 @@ static void swapchain_retire(void) { /* sc_lock held */
     for (u32 i = 0; i < g_vk.sc_count; i++) retired[nretired++] = g_vk.sc_done[i];
     vk_ui_swapchain_gone();
     vk_hdr_swapchain_gone(); /* SWR: the present pass's views of the images (hdr.c) */
-    vkDestroySwapchainKHR(g_vk.dev, g_vk.swapchain, NULL);
+    vk_sc_destroy(g_vk.swapchain); /* SWR: AMD's frame generation swapchain or the plain one (fsr_fg.c) */
     g_vk.swapchain = VK_NULL_HANDLE;
     g_vk.sc_clock = VK_CLOCK_NONE;
     g_vk.sc_hold = 0;
@@ -979,6 +1010,7 @@ static void swapchain_retire(void) { /* sc_lock held */
 }
 /* vkDeviceWaitIdle, which takes every queue: those of the decoder's (FFmpeg's) are excluded by vk_lock, held here */
 static void device_wait_idle(void) {
+    vk_fsr_fg_wait_presents(); /* SWR: frame generation's swapchain uses queues of its own from its threads (fsr_fg.c) */
     vk_queue_lock(g_vk.gfx);
     if (g_vk.compute != g_vk.gfx) vk_queue_lock(g_vk.compute);
     vkDeviceWaitIdle(g_vk.dev);
@@ -1124,7 +1156,9 @@ int vk_swapchain_create(int srgb) {
     /* frames held until a time (display.c), under FIFO where the surface can: present ids and waits 2 with it */
     int timing = 0;
     VkPresentStageFlagsEXT stages = 0;
-    if (g_vk.has_present_timing && mode == VK_PRESENT_MODE_FIFO_KHR) {
+    /* SWR: AMD's frame generation swapchain (fsr_fg.c) presents from a thread of its own: no timed presents with it */
+    int fg = vk_fsr_fg_ready(), fgsc = 0;
+    if (!fg && g_vk.has_present_timing && mode == VK_PRESENT_MODE_FIFO_KHR) {
         VkPresentTimingSurfaceCapabilitiesEXT ct = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT};
         VkSurfaceCapabilitiesPresentId2KHR cid = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_PRESENT_ID_2_KHR,
                                                   .pNext = &ct};
@@ -1162,7 +1196,13 @@ int vk_swapchain_create(int srgb) {
     u32 nimg = 0, ndone = 0;
     VkSemaphoreCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
     pm_lock(&g_vk.sc_lock); /* until the new swapchain is g_vk's: the old one is retired from here */
-    cr = vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &sc);
+    if (fg && old) { /* SWR: AMD's swapchain makes a real one of its own on the surface: the old one goes first */
+        swapchain_retire();
+        old = VK_NULL_HANDLE;
+        ci.oldSwapchain = VK_NULL_HANDLE;
+    }
+    fgsc = fg && vk_fsr_fg_swapchain(&ci, &sc) == VK_SUCCESS; /* failing, the plain swapchain from here on */
+    cr = fgsc ? VK_SUCCESS : vkCreateSwapchainKHR(g_vk.dev, &ci, NULL, &sc);
     if (cr != VK_SUCCESS) { /* tried again on each present while it fails: said a few times */
         WARN_LIMIT(4, "vulkan: the swapchain could not be made: %s (%d)\n", snx_vk_result_str(cr), (int)cr);
         if (cr == VK_ERROR_SURFACE_LOST_KHR) g_vk.sc_lost = 1;
@@ -1170,12 +1210,12 @@ int vk_swapchain_create(int srgb) {
         pm_unlock(&g_vk.sc_lock);
         return 0;
     }
-    vkGetSwapchainImagesKHR(g_vk.dev, sc, &nimg, NULL);
+    vk_sc_images(sc, &nimg, NULL);
     if (nimg > VK_SC_MAX) WARN("vulkan: the swapchain has %u images, more than the %d taken\n", nimg, VK_SC_MAX);
     while (nimg <= VK_SC_MAX && ndone < nimg && VK_OK(vkCreateSemaphore(g_vk.dev, &si, NULL, &done[ndone]))) ndone++;
     if (nimg > VK_SC_MAX || ndone < nimg) {
         while (ndone) vkDestroySemaphore(g_vk.dev, done[--ndone], NULL);
-        vkDestroySwapchainKHR(g_vk.dev, sc, NULL);
+        vk_sc_destroy(sc);
         if (old) swapchain_retire();
         pm_unlock(&g_vk.sc_lock);
         return 0;
@@ -1185,7 +1225,8 @@ int vk_swapchain_create(int srgb) {
     /* the times presents are held until: the system's CLOCK_MONOTONIC (plat_monotonic_ns) if the swapchain has it,
        else a present stage's own clock, calibrated against CLOCK_MONOTONIC at each present (display.c), the stage
        the first pixel goes out at if it can be. VK_GOOGLE_display_timing's are CLOCK_MONOTONIC's, under FIFO */
-    g_vk.sc_clock = timing                    ? VK_CLOCK_WAIT2
+    g_vk.sc_clock = fgsc                      ? VK_CLOCK_NONE
+                    : timing                  ? VK_CLOCK_WAIT2
                     : g_vk.has_present_wait   ? VK_CLOCK_WAIT
                     : g_vk.has_display_timing ? VK_CLOCK_GOOGLE
                                               : VK_CLOCK_NONE;
@@ -1223,10 +1264,10 @@ int vk_swapchain_create(int srgb) {
     g_vk.sc_turned = transform != caps.currentTransform;
     g_vk.sc_vsync = vsync;
     g_vk.sc_count = nimg;
-    vkGetSwapchainImagesKHR(g_vk.dev, sc, &g_vk.sc_count, g_vk.sc_images);
+    vk_sc_images(sc, &g_vk.sc_count, g_vk.sc_images);
     memcpy(g_vk.sc_done, done, sizeof done[0] * nimg);
-    LOG("vulkan: swapchain %ux%u, %u images%s%s, %s\n", ext.width, ext.height, g_vk.sc_count,
-        g_vk.sc_srgb ? ", sRGB" : "",
+    LOG("vulkan: swapchain %ux%u, %u images%s%s%s, %s\n", ext.width, ext.height, g_vk.sc_count,
+        g_vk.sc_srgb ? ", sRGB" : "", fgsc ? ", FSR frame generation's" : "",
         g_vk.sc_hold    ? ", presents timed and held until they are due"
         : g_vk.sc_clock ? ", presents timed"
                         : "",

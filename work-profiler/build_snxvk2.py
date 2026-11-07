@@ -35,13 +35,14 @@ SRC = ('gpu/gpu.c gpu/maxwell/engines.c gpu/maxwell/mme.c gpu/maxwell/compute.c 
        'gpu/vk/blocklinear.c gpu/vk/texconv.c gpu/vk/owned.c gpu/vk/dma.c gpu/vk/blit.c gpu/vk/msaa.c gpu/vk/ui.c '
        'gpu/texture/blocklinear.c gpu/texture/depth.c gpu/vk/vic.c gpu/vk/gpuprof.c gpu/vk/ftz_probe.c '
        'gpu/vk/vertex_input.c gpu/vk/draw_texture.c gpu/vk/tess_passthrough.c gpu/vk/xxh3.c gpu/vk/uma.c '
-       'gpu/vk/hdr.c gpu/vk/swr_settings.c gpu/vk/swr_glue.c').split() + (['gpu/vk/dlss_stub.c'] if NODLSS else ['gpu/vk/dlss.c'])
+       'gpu/vk/hdr.c gpu/vk/swr_settings.c gpu/vk/swr_glue.c').split() + (['gpu/vk/dlss_stub.c'] if NODLSS else ['gpu/vk/dlss.c', 'gpu/vk/fsr_fg.c'])
 COMMON = ['common/gpu/vk/ring.c', 'common/gpu/vk/swapchain.c', 'common/gpu/vk/vk_common.c', 'common/utilities/spirv_emit.c']
 REDIRECT = {'g_opt_vsync': 'snxvk_opt_vsync'}
 GEN = os.path.join(OUT, 'shaderdec')
 INC = ['-I' + S, '-I' + NX, '-I' + GEN, '-I' + DEPS['volk'], '-I' + os.path.join(DEPS['vma'], 'include'),
        '-I' + os.path.join(DEPS['vkh'], 'include'), '-I' + DEPS['xxh'], '-I' + os.path.join(DEPS['zstd'], 'lib'),
-       '-I' + os.path.join(ROOT, 'runtime')]
+       '-I' + os.path.join(ROOT, 'runtime'),
+       '-I' + os.path.join(V, 'deps', 'FidelityFX-SDK-2.4.0')]  # AMD's MIT API headers, for fsr_fg.c
 # SNX_SHIP_WALK: upstream's cmake/ship_walk.cmake hashes shipped_pass.c into it, a key of its shader files
 CF = ['-std=gnu2x', '-O2', '-fno-strict-aliasing', '-DVK_NO_PROTOTYPES', '-DVK_USE_PLATFORM_WIN32_KHR',
       '-DSNX_SHIP_WALK="swr-3f15d931"', '-w'] + INC

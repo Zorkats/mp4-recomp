@@ -297,6 +297,15 @@ from the same save), traced to a root cause and checked again in the game.
   machine's, which had made it need AVX-512 and glibc 2.43 ("CPU ISA level is lower than required" on a Steam Deck).
 - Cheats in Atmosphere / dmnt format, toggled per cheat in the in-game menu.
 - AMD FidelityFX FSR 1 upscaling with a sharpness slider.
+- **AMD FSR 3.1 frame generation** (Windows, `renderer=vulkan_native`, `[Graphics] fsr_frame_generation=1`): one
+  generated frame between each pair the game renders, on any GPU with Vulkan 1.3. AMD's two signed DLLs are not part
+  of the release: the launcher's Graphics page has a **Download AMD FSR frame generation** button that fetches them
+  from AMD's FidelityFX SDK on GitHub (v2.4.0, size and SHA-256 checked). Limits for now: the HUD is generated along
+  with the scene (no HUD-less image yet), it is off with HDR, and it pauses while the in-game menu is open and on
+  screens without a 3D scene.
+- **NVIDIA DLSS download**: the launcher's Graphics page has a **Download NVIDIA DLSS** button that fetches
+  `nvngx_dlss.dll` from NVIDIA's DLSS repository on GitHub (v310.9.16, size and SHA-256 checked) for DLAA
+  (`[Graphics] dlss=1`, RTX cards).
 - Launcher themes (Display page, LAUNCHER LOOK): Beyond, Amber visor, High contrast, or your own `theme.ini` next to
   the game (`accent=#RRGGBB` lines; the page shows the text contrast it gives). The in-game menu follows the theme.
   **Reduce motion** stops the background rings and the progress-bar stripes.
@@ -421,7 +430,9 @@ when `python.exe` on `PATH` isn't the one you want.
 - **yozander2009-stack** and contributors: the recompiled runtime and launcher this port is built from
 - **MZ Labs**: SwitchRecomp (Apache-2.0); "SwitchRecomp by MZ Labs" and NOTICE.txt must be kept
 - **ScarletNX**: the native Vulkan renderer (GPL-3.0)
-- **AMD**: FidelityFX Super Resolution 1 (MIT)
+- **AMD**: FidelityFX Super Resolution 1 (MIT); FidelityFX SDK 2.4.0 API headers (MIT) for FSR 3.1 frame
+  generation, whose DLLs are downloaded from AMD at the player's request
+- **NVIDIA**: DLSS, downloaded from NVIDIA at the player's request (`nvngx_dlss.dll` is not part of the release)
 - **Dear ImGui** (MIT), libvpx and OpenH264 (BSD), SDL2 and zlib (zlib licence)
 - **Claude** (Anthropic): AI pair programmer for this fork's changes
 - Program icon: [Metroid icon created by Smashicons - Flaticon](https://www.flaticon.com/free-icons/metroid)

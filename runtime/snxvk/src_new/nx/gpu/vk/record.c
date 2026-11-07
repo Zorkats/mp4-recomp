@@ -20,6 +20,7 @@
 #include "nx/gpu/vk/descriptors.h"
 #include "nx/runtime/platform/plat.h"
 #include "nx/runtime/platform/tracy.h"
+VkResult vk_sc_present(VkQueue q, const VkPresentInfoKHR* pi); /* SWR: fsr_fg.c, dlss_stub.c */
 
 typedef void (*RecFn)(const void* args);
 typedef struct {
@@ -279,7 +280,7 @@ static VkResult present_run(const Present* x) {
     SNX_ZONE(z_queue_present, "vkQueuePresentKHR");
     pm_lock(&g_vk.sc_lock); /* the swapchain, which the GPU thread acquires from and display.c waits on meanwhile */
     vk_queue_lock(g_vk.gfx);
-    VkResult r = vkQueuePresentKHR(g_vk.gfx, &pi);
+    VkResult r = vk_sc_present(g_vk.gfx, &pi); /* SWR: AMD's frame generation swapchain or the plain one (fsr_fg.c) */
     vk_queue_unlock(g_vk.gfx);
     pm_unlock(&g_vk.sc_lock);
     vk_display_made(x->id, r);

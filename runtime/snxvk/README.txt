@@ -72,10 +72,12 @@ Local changes to upstream (marked "SWR" in the code):
   gpu/vk/swr_settings.c our .ini's settings (profile=1 also turns on vk_gpu_profile and vk_buffer_stats), and the
                         [Graphics] vk_* switches: vk_fast_writeback (default 1), vk_async_pipelines (default 0),
                         vk_memory_traps (default 1), vk_dynamic_offsets (default 1)
-  gpu/vk/dlss.c, dlss_stub.c: DLSS (private builds only; dlss_stub.c in the public one). Its hooks in render.c,
-                        texture.c, device.c and spirv_translate.c are not yet carried over to this commit
+  gpu/vk/dlss.c, dlss_stub.c: DLSS. Its hooks are in render.c, texture.c, device.c, renderer.c and spirv_translate.c.
+                        The public build links dlss.c too: DLSS ships, and the front end downloads NVIDIA's
+                        nvngx_dlss.dll at a pinned version (the release carries no NVIDIA file). dlss_stub.c is only
+                        for a build that leaves DLSS out (SWR_NO_DLSS=1)
 
 Build: set GLSLANG=<glslang.exe 16.6.0> and run python\python.exe work-profiler\build_snxvk2.py
-(SWR_NO_DLSS=1: runtime\snxvk\libsnxvk_new_nodlss.a, the public build), then the normal --build-runtime links it and
-compiles runtime\snxvk_glue.c (the adapter between this renderer and our runtime).
+(SWR_NO_DLSS=1: runtime\snxvk\libsnxvk_new_nodlss.a, for a build that leaves DLSS out), then the normal
+--build-runtime links it and compiles runtime\snxvk_glue.c (the adapter between this renderer and our runtime).
 Every global symbol of the ScarletNX objects is renamed with the prefix snxv_ so its GPU front end can sit next to ours.

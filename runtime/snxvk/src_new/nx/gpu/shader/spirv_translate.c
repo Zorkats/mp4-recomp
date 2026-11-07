@@ -6,6 +6,9 @@
 #include "nx/gpu/shader/translate.h"
 #include "nx/gpu/shader/advanced_blend_spirv.h"
 
+/* SWR: DLSS motion vector capture (gpu/vk/dlss.c, dlss_stub.c) */
+int vk_dlss_xfb_wanted(void);
+
 /* Only an ordered storage image owns the attachment here. The renderer detaches it from fixed-function color
    output, and gates depth, multisampling and format support before requesting this variant. Every invocation
    executes one begin/end pair, including a discarded/helper invocation, which cannot update the image. */
@@ -1950,6 +1953,12 @@ static u32* to_spirv(const u8* code, const u64* insn, u32 max_bytes, int stage, 
     if (xfb_on) {
         spv_emit_capability(&c->emit, 53);               /* TransformFeedback */
         spv_emit_execution_mode(&c->emit, fn, 11, 0, 0); /* Xfb */
+    } else if (stage == ST_VS && position && vk_dlss_xfb_wanted()) {
+        /* SWR: DLSS motion vectors (gpu/vk/dlss.c) capture the position into buffer 0, one vec4 a vertex, when the
+           game does not use transform feedback itself */
+        spv_emit_capability(&c->emit, 53);               /* TransformFeedback */
+        spv_emit_execution_mode(&c->emit, fn, 11, 0, 0); /* Xfb */
+        spv_emit_xfb_capture(&c->emit, position, 0, 16, 0);
     }
     if (stage == ST_TCS) spv_emit_execution_mode(&c->emit, fn, 26, 1, out_vertices); /* OutputVertices */
     if (stage == ST_TES) {

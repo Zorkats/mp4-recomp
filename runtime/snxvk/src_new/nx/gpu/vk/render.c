@@ -218,6 +218,14 @@ static VkExtent2D target_extent(Surf* const* rt, const Surf* zt, u32 n) {
     }
     return ext;
 }
+/* SWR: DLSS (dlss.c, dlss_stub.c): the pass, the draws, the jitter and the motion vectors' capture */
+void vk_dlss_pass(Surf** rt, u32 n);
+void vk_dlss_draw_begin(void);
+void vk_dlss_jitter(Surf* zt, int depth_write, int depth_equal, VkViewport* vp);
+int vk_dlss_capture_begin(VkCommandBuffer cb, Surf* zt, int depth_write, int plain_tris, u64 key, u32 verts,
+                          const VkViewport* vp, const VkViewport* vpj);
+void vk_dlss_capture_end(VkCommandBuffer cb);
+void vk_dlss_draw(Surf* rt0, Surf* zt, int depth_test, int depth_cmp);
 /* opens a rendering pass on these targets (begun at its first command: rp_record), or keeps the open one if it is the
    same set. zt_ro: the depth target is
    bound read-only, so draws can sample it too (soft particles test against depth they also read). fb: color slots the
@@ -225,6 +233,7 @@ static VkExtent2D target_extent(Surf* const* rt, const Surf* zt, u32 n) {
    attachment has a surface (a draw's color targets all sampled and none written, render_draw), the targets' the guest
    bound */
 static int render_begin(Surf** rt, Surf* zt, u32 n, int zt_ro, int srgb_write, u32 fb, VkExtent2D area) {
+    vk_dlss_pass(rt, n); /* SWR: DLSS runs on the scene target before the pass after it (dlss.c) */
     srgb_write = !!srgb_write;
     if (!n && !zt) return 0;
     if (!zt) zt_ro = 0;
@@ -3073,6 +3082,7 @@ static void render_draw(const DsState* ds, const DrawCall* dc, DrawOwner* o) {
     int bset_ok, b;
     VkSh *vs, *tcs, *tes, *gs, *between[3];
     VkDescriptorSet bset[3];
+    vk_dlss_draw_begin(); /* SWR: the reads this draw makes belong to it (dlss.c) */
     if (!count || !instances) return;
     vk_frame_check();
     if (g_draw.check < 0) {
@@ -3719,6 +3729,13 @@ retry:
         }
         scissor[i] = sc;
     }
+    /* SWR: DLSS (dlss.c): the scene's draws move by the frame's jitter, and a draw with one viewport only (the capture
+       takes one). vp_unjittered is the viewport its motion vectors start from */
+    VkViewport vp_unjittered = viewport[0];
+    if (viewports == 1) {
+        int depth_equal = zt && ds->dyn.depth_test && ds->dyn.depth_cmp == VK_COMPARE_OP_EQUAL;
+        vk_dlss_jitter(zt, zt && ds->dyn.depth_write, depth_equal, &viewport[0]);
+    }
     if (fresh || g_dyn.viewports != viewports || memcmp(g_dyn.vp, viewport, viewports * sizeof *viewport)) {
         memcpy(g_dyn.vp, viewport, viewports * sizeof *viewport);
         rec_CmdSetViewportWithCount(cb, viewports, viewport);
@@ -3783,6 +3800,10 @@ retry:
         DYN(dbounds, bounds_on, rec_CmdSetDepthBoundsTestEnable(cb, bounds_on));
         DYNV(depth_bounds, bounds, rec_CmdSetDepthBounds(cb, bounds[0], bounds[1]));
     }
+    /* SWR: DLSS and FSR frame generation (dlss.c), the pass is open; the compare of depth-writing draws tells which
+       way the scene's depth runs */
+    vk_dlss_draw(n ? rt[0] : NULL, zt, zt && ds->dyn.depth_test,
+                 zt && ds->dyn.depth_test && ds->dyn.depth_write ? (int)ds->dyn.depth_cmp : -1);
     int stencil = zt && zt->f.stencil && ds->dyn.stencil_test;
     DYN(st, (u32)stencil, rec_CmdSetStencilTestEnable(cb, stencil));
     {
@@ -3869,6 +3890,20 @@ retry:
         rec_CmdBindTransformFeedbackBuffersEXT(cb, 0, xcount, xbuf, xoff, xsize);
         rec_CmdBeginTransformFeedbackEXT(cb, 0, xcount, from, counter_offs);
     }
+    /* SWR: DLSS (dlss.c): a scene prepass draw's positions are captured for its motion vectors. Keyed by the draw's guest
+       addresses: the host buffer and offset move between frames here (buffers are suballocated), so they can't pair
+       draws (2026-10-22: wrong motion vectors, and DLSS held its old picture) */
+    int dlss_xfb = 0;
+    if (!xcount && viewports == 1) {
+        u64 key = vs ? vs->hash : 0;
+        u64 parts[8] = {nvq ? vq[0].gva : 0, nvq ? vq[0].base : 0, ia, first,
+                        count,               base_vertex,           base_instance, instances};
+        for (int i = 0; i < 8; i++) key = (key ^ parts[i]) * 0x100000001B3ull;
+        dlss_xfb = vk_dlss_capture_begin(cb, zt, zt && ds->dyn.depth_write && ds->dyn.depth_test,
+                                         topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST && !gs && !tes && !tcs, key,
+                                         (indexed ? icount : count) * (instances ? instances : 1), &vp_unjittered,
+                                         &viewport[0]);
+    }
     pred_begin(cb, o->pred);
     if (dc->indirect) {
         if (indexed) rec_CmdBindIndexBuffer(cb, ibuf, ioff, itype);
@@ -3879,6 +3914,7 @@ retry:
     } else
         rec_CmdDraw(cb, count, instances, first, base_instance);
     pred_end(cb, o->pred);
+    if (dlss_xfb) vk_dlss_capture_end(cb); /* SWR: DLSS (dlss.c) */
     if (xcount) {
         rec_CmdEndTransformFeedbackEXT(cb, 0, xcount, counters, counter_offs);
         o->xfb_started = (u8)((o->xfb_started | xbound) & 15);

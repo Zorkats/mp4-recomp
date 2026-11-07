@@ -1971,13 +1971,16 @@ static void tex_take_drawn(Surf* t) {
         t->take_wgen = t->wgen;
     }
 }
+void vk_dlss_before_read(u64 gva); /* SWR: dlss.c: DLSS runs on the scene target before anything reads it */
 Surf* vk_tex_from_tic(const u32* tic) {
     Surf* t = tex_from_tic(tic, 0, 0);
+    if (t) vk_dlss_before_read(t->gva);
     tex_take_drawn(t);
     return t;
 }
 Surf* vk_tex_from_tic_storage(const u32* tic) {
     Surf* t = tex_from_tic(tic, 0, 1);
+    if (t) vk_dlss_before_read(t->gva); /* SWR: a storage read is a read (it was one through vk_tex_from_tic) */
     tex_take_drawn(t);
     return t;
 }
@@ -1989,6 +1992,7 @@ Surf* vk_tex_recheck(Surf* t) {
 }
 Surf* vk_tex_from_tic_raw(const u32* tic) {
     Surf* t = tex_from_tic(tic, 1, 0);
+    if (t) vk_dlss_before_read(t->gva);
     tex_take_drawn(t);
     return t;
 }

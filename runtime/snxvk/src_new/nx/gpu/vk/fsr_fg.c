@@ -31,6 +31,7 @@ typedef struct VkQueueInfoFFXAPI VkQueueInfoFFXAPI;
 extern char g_exedir[1024];
 extern int snxvk_fsr_fg; /* the INI's fsr_frame_generation, from runtime/snxvk_glue.c */
 extern int ov_is_open(void); /* the runtime's overlay menu (beyond_ui) */
+extern volatile unsigned long long g_fg_generated_frames; /* the runtime's FPS counter (main.c) adds these */
 int vk_dlss_depth_inverted(void);
 
 static struct {
@@ -276,10 +277,29 @@ void vk_sc_destroy(VkSwapchainKHR sc) {
     g_fg.sc = VK_NULL_HANDLE;
 }
 
+/* The swapchain is an sRGB format, so a view of its format decodes the sRGB curve as it reads, and AMD's shaders then
+   decode it again from the backbuffer's transfer function: generated frames came out far darker than the real ones, a
+   flicker over the whole screen. AMD's own helpers take an sRGB backbuffer to be a UNORM image with sRGB views
+   (ffx_api_vk.h, the mutable-format rule), so the backbuffer is described as that, to the context and in each
+   dispatch: read raw, decoded once. */
+static uint32_t gamma_raw(uint32_t f) {
+    if (f == FFX_API_SURFACE_FORMAT_B8G8R8A8_SRGB) return FFX_API_SURFACE_FORMAT_B8G8R8A8_UNORM;
+    if (f == FFX_API_SURFACE_FORMAT_R8G8B8A8_SRGB) return FFX_API_SURFACE_FORMAT_R8G8B8A8_UNORM;
+    return f;
+}
+
 /* ---- each frame */
 static ffxReturnCode_t generate(ffxDispatchDescFrameGeneration* params, void* user) {
     g_fg.generated++;
+    g_fg_generated_frames++;
+    params->presentColor.description.format = gamma_raw(params->presentColor.description.format);
     return g_fg.dispatch((ffxContext*)user, &params->header);
+}
+
+static bool only_generated(void) { /* SWR_FSR_FG_ONLY_GENERATED=1: only the generated frames shown, to look at them */
+    static int o = -1;
+    if (o < 0) o = getenv("SWR_FSR_FG_ONLY_GENERATED") != NULL;
+    return o != 0;
 }
 
 static void configure(int enabled) {
@@ -294,7 +314,7 @@ static void configure(int enabled) {
         .allowAsyncWorkloads = false,
         .HUDLessColor = {0},
         .flags = 0,
-        .onlyPresentGenerated = false,
+        .onlyPresentGenerated = only_generated(),
         .generationRect = {0, 0, (int)g_fg.fg_dw, (int)g_fg.fg_dh},
         .frameID = g_fg.frame};
     ffxReturnCode_t r = g_fg.configure(&g_fg.fg_ctx, &c.header);
@@ -323,7 +343,7 @@ static int fg_create(u32 w, u32 h) {
         .flags = inverted ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED : 0,
         .displaySize = {dw, dh},
         .maxRenderSize = {w, h},
-        .backBufferFormat = ffx_format(g_vk.sc_format)};
+        .backBufferFormat = gamma_raw(ffx_format(g_vk.sc_format))};
     d.header.pNext = &be.header;
     be.header.pNext = &ver.header;
     ffxReturnCode_t r = g_fg.create(&g_fg.fg_ctx, &d.header, NULL);
@@ -369,8 +389,9 @@ static struct FfxApiResource image_res(VkImage img, VkFormat f, u32 w, u32 h, in
 
 /* dlss.c, the scene's motion vectors made (in GENERAL, render pixels, current to previous) with its depth (in
    GENERAL): this frame's configure and prepare, recorded into the frame's commands ahead of the present */
-void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, float jx, float jy, int reset);
-void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, float jx, float jy, int reset) {
+void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, u32 rw, u32 rh, float jx, float jy, int reset);
+/* w x h: the depth and motion vector images; rw x rh: their top-left part the scene was drawn to */
+void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, u32 rw, u32 rh, float jx, float jy, int reset) {
     if (!vk_fsr_fg_active() || !fg_create(w, h)) return;
     VkCommandBuffer cb = vk_cmd(); /* after fg_create, whose vk_finish ends the command buffer it had */
     u64 now = plat_ns();
@@ -387,7 +408,7 @@ void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, float jx, float jy, int 
             .frameID = g_fg.frame,
             .flags = 0,
             .commandList = cb,
-            .renderSize = {w, h},
+            .renderSize = {rw, rh},
             .jitterOffset = {js * jx, js * jy},
             .motionVectorScale = {1.0f, 1.0f}, /* render pixels */
             .frameTimeDelta = dt,
@@ -421,7 +442,7 @@ void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, float jx, float jy, int 
             .frameID = g_fg.frame,
             .flags = 0,
             .commandList = cb,
-            .renderSize = {w, h},
+            .renderSize = {rw, rh},
             .jitterOffset = {js * jx, js * jy},
             .motionVectorScale = {1.0f, 1.0f},
             .frameTimeDelta = dt,

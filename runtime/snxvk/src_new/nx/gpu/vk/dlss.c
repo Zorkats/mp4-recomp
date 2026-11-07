@@ -68,7 +68,7 @@ extern int snxvk_dlss_mode;
 /* FSR frame generation (fsr_fg.c) */
 int vk_fsr_fg_wanted(void);
 int vk_fsr_fg_active(void);
-void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, float jx, float jy, int reset);
+void vk_fsr_fg_scene(Surf* z, VkImage mv, u32 w, u32 h, u32 rw, u32 rh, float jx, float jy, int reset);
 int vk_dlss_wanted(void);
 int vk_dlss_wanted(void) { return snxvk_dlss_mode > 0 || getenv("SWR_DLSS_PROBE") != NULL; }
 
@@ -292,6 +292,8 @@ static struct {
     int k;
     u64 stable, chosen;
     int streak, reset;
+    float vx, vy; /* this frame: the far corner of the scene draws' viewports, in image pixels (the scene's own size,
+                     less than the depth image's at a dynamic resolution) */
 } g_fz;
 
 /* SWR_DLSS_TRACE=1: one frame in 1200 written out pass by pass (where the scene point is looked for) */
@@ -402,6 +404,7 @@ void vk_dlss_frame(void) {
             g_fz.reset = 1;
         }
         g_fz.chosen = vk_fsr_fg_active() ? g_fz.stable : 0;
+        g_fz.vx = g_fz.vy = 0;
     }
     if (g_dl.small_seen && g_dl.frame_best) {
         g_dl.missing = 0;
@@ -635,6 +638,11 @@ static int scene_draw(Surf* zt) {
    (deferred lighting and screen-space passes, which sample by screen position) */
 void vk_dlss_jitter(Surf* zt, int depth_write, int depth_equal, VkViewport* vp);
 void vk_dlss_jitter(Surf* zt, int depth_write, int depth_equal, VkViewport* vp) {
+    if (depth_write && !dl_active() && scene_draw(zt)) { /* frame generation's scene size */
+        float x = vp->x + vp->width, y = vp->height < 0 ? vp->y : vp->y + vp->height;
+        if (x > g_fz.vx) g_fz.vx = x;
+        if (y > g_fz.vy) g_fz.vy = y;
+    }
     { static int nj = -1; if (nj < 0) nj = getenv("SWR_DLSS_NO_JITTER") != NULL; /* once: this runs at every draw */
       if (!dl_active() || !scene_draw(zt) || nj) return; } /* frame generation alone: no jitter */
     { static int all = -1; if (all < 0) all = getenv("SWR_DLSS_JITTER_ALL") != NULL;
@@ -959,7 +967,7 @@ static int evaluate(Surf* t, Surf* z) {
     }
     { /* FSR frame generation's prepare, on this frame's depth and motion vectors (fsr_fg.c) */
         int jit = !getenv("SWR_DLSS_NO_JITTER") && g_mv.jit_used;
-        vk_fsr_fg_scene(z, g_dl.mv, w, h, jit ? g_mv.jx : 0.0f, jit ? g_mv.jy : 0.0f, g_dl.reset || g_fz.reset);
+        vk_fsr_fg_scene(z, g_dl.mv, w, h, w, h, jit ? g_mv.jx : 0.0f, jit ? g_mv.jy : 0.0f, g_dl.reset || g_fz.reset);
     }
     g_dl.reset = 0;
     g_fz.reset = 0;
@@ -993,13 +1001,20 @@ static void fg_point(void) {
                    VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL);
     else /* the pass read the depth as an attachment: back to compute reads */
         vk_surf_use(cb, z, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT);
-    vk_fsr_fg_scene(z, g_dl.mv, w, h, 0.0f, 0.0f, g_fz.reset);
+    /* the part of the depth image the scene covers: at a dynamic resolution the game draws its scene into the top-left
+       of its targets and scales it up to the frame itself, so depth and motion vectors map to the picture from there */
+    static int full = -1;
+    if (full < 0) full = getenv("SWR_FSR_FG_FULL_RECT") != NULL;
+    u32 rw = (u32)(g_fz.vx + 0.5f), rh = (u32)(g_fz.vy + 0.5f);
+    if (full || !rw || !rh || rw > w || rh > h) rw = w, rh = h;
+    vk_fsr_fg_scene(z, g_dl.mv, w, h, rw, rh, 0.0f, 0.0f, g_fz.reset);
     g_fz.reset = 0;
     vk_render_forget_state(); /* the motion-vector pass and FidelityFX bound state of their own */
     static u32 n;
     if (++n == 1 || n % 600 == 0)
-        LOG("fsr: depth %llx %ux%u (image %ux%u), motion vectors from %u of %u captured draws\n",
-            (unsigned long long)z->gva, z->w, z->h, w, h, drawn > 1 ? drawn : 0, g_mv.nrec[g_mv.cur]);
+        LOG("fsr: depth %llx %ux%u (image %ux%u), scene %ux%u (viewports to %.1f x %.1f), motion vectors from %u of %u "
+            "captured draws\n", (unsigned long long)z->gva, z->w, z->h, w, h, rw, rh, g_fz.vx, g_fz.vy,
+            drawn > 1 ? drawn : 0, g_mv.nrec[g_mv.cur]);
 }
 
 /* texture.c, before a texture over a render target takes its pixels */

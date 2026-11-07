@@ -1846,8 +1846,8 @@ static void state_dirty(void){ g_state_ok=0; g_gs_ok=0; }
 void gpu_gl_state_dirty(void){ state_dirty(); }   /* the in-game menu drew with its own GL state (beyond_ui/ov.cpp) */
 /* FPS counter (main.c fps_overlay_rects) onto the window's framebuffer, as scissored clears */
 void gpu_gl_fps_overlay(void){
-  extern int fps_overlay_rects(int,int,int(*)[5],int); int (*r)[5]; int buf[64][5]; r=buf; int w=1,h=1; backend_window_size(&w,&h);
-  int n=fps_overlay_rects(w,h,r,64); if(!n) return;
+  extern int fps_overlay_rects(int,int,int(*)[5],int); int (*r)[5]; int buf[96][5]; r=buf; int w=1,h=1; backend_window_size(&w,&h);
+  int n=fps_overlay_rects(w,h,r,96); if(!n) return;
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER,0); glEnable(GL_SCISSOR_TEST); glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
   for(int i=0;i<n;i++){ glScissor(r[i][0],h-r[i][1]-r[i][3],r[i][2],r[i][3]);
     if(r[i][4]) glClearColor(1.0f,0.92f,0.2f,1.0f); else glClearColor(0.0f,0.0f,0.0f,1.0f);

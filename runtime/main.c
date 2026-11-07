@@ -26,31 +26,49 @@ int g_present_pacing_candidate;
 int g_opt_audio_surround_downmix=1;   /* Prime 4 mixes in 5.1 with dialogue in the center channel: front-only stereo dropped the voices */
 /* FPS counter ([Graphics] show_fps): a seven-segment "123 FPS" in the top-left corner as plain rectangles, so every
    build and renderer can draw it with clears (gpu_gl.c window pass, snxvk hdr.c present pass). Counted from presents,
-   i.e. the frames that reach the screen, over half a second. Each rect: x, y (top-left origin), w, h, 0 back / 1 text */
+   i.e. the frames that reach the screen, over half a second. Each rect: x, y (top-left origin), w, h, 0 back / 1 text.
+   With FSR frame generation running it counts presents of the game's own frames only, so it shows two rows: what
+   reaches the screen (those plus the generated ones) as "FPS", and under it what the game rendered as "rEnd" */
 int g_opt_show_fps=0;
+volatile unsigned long long g_fg_generated_frames;   /* frames FSR frame generation made so far (snxvk fsr_fg.c) */
+static int g_fps_rows=1;
+int fps_overlay_rows(void){ return g_opt_show_fps ? g_fps_rows : 0; }   /* snxvk hdr.c: its skip prompt goes below */
 volatile int g_skip_prompt;            /* the native Vulkan renderer's top-left prompt overlay (snxvk hdr.c): nothing sets it */
 volatile float g_skip_hold;
 static void env_switch(const char* name, int on);
-int fps_overlay_rects(int W,int H,int (*r)[5],int max){
-  static u64 t0;static u32 frames;static int fps=-1;
-  if(!g_opt_show_fps){t0=0;frames=0;fps=-1;return 0;}
-  u64 now=plat_ns();if(!t0)t0=now;else frames++;
-  if(now-t0>=500000000ull){fps=(int)(((u64)frames*2000000000ull/(now-t0)+1)/2);t0=now;frames=0;}
+/* one row of seven-segment glyphs, its back first; returns the new rect count */
+static int fps_row(int (*r)[5],int n,int max,int x0,int y0,float s,int value,const u8* label,int nl){
   static const u8 digit[10]={0x3F,0x06,0x5B,0x4F,0x66,0x6D,0x7D,0x07,0x7F,0x6F};
-  u8 glyph[8];int ng=0;
-  if(fps<0)glyph[ng++]=0x40;
-  else{char t[8];int k=snprintf(t,sizeof t,"%d",fps>999?999:fps);for(int i=0;i<k;i++)glyph[ng++]=digit[t[i]-'0'];}
-  glyph[ng++]=0;glyph[ng++]=0x71;glyph[ng++]=0x73;glyph[ng++]=0x6D;   /* space F P S */
-  float s=(float)H/1080.f;if(s<0.5f)s=0.5f;(void)W;
-  int dh=(int)(26*s+0.5f),dw=(int)(14*s+0.5f),t=(int)(3*s+0.5f),gap=(int)(6*s+0.5f),pad=(int)(8*s+0.5f),x0=(int)(16*s+0.5f),y0=x0;
+  u8 glyph[12];int ng=0;
+  if(value<0)glyph[ng++]=0x40;
+  else{char t[8];int k=snprintf(t,sizeof t,"%d",value>999?999:value);for(int i=0;i<k;i++)glyph[ng++]=digit[t[i]-'0'];}
+  glyph[ng++]=0;for(int i=0;i<nl;i++)glyph[ng++]=label[i];
+  int dh=(int)(26*s+0.5f),dw=(int)(14*s+0.5f),t=(int)(3*s+0.5f),gap=(int)(6*s+0.5f),pad=(int)(8*s+0.5f);
   if(t<2)t=2;
-  int n=0,total=ng*dw+(ng-1)*gap;
+  int total=ng*dw+(ng-1)*gap;
   if(n<max){r[n][0]=x0-pad;r[n][1]=y0-pad;r[n][2]=total+2*pad;r[n][3]=dh+2*pad;r[n][4]=0;n++;}
   int half=dh/2;
   for(int i=0;i<ng;i++){int x=x0+i*(dw+gap),y=y0;
     const int seg[7][4]={{x,y,dw,t},{x+dw-t,y,t,half+t/2},{x+dw-t,y+half-t/2,t,dh-half+t/2},{x,y+dh-t,dw,t},{x,y+half-t/2,t,dh-half+t/2},{x,y,t,half+t/2},{x,y+half-t/2,dw,t}};
     for(int k=0;k<7&&n<max;k++)if(glyph[i]>>k&1){r[n][0]=seg[k][0];r[n][1]=seg[k][1];r[n][2]=seg[k][2];r[n][3]=seg[k][3];r[n][4]=1;n++;}}
   return n;
+}
+int fps_overlay_rects(int W,int H,int (*r)[5],int max){
+  static u64 t0,g0;static u32 frames;static int fps=-1,shown=-1;
+  if(!g_opt_show_fps){t0=0;frames=0;fps=-1;shown=-1;g_fps_rows=1;return 0;}
+  u64 now=plat_ns();if(!t0){t0=now;g0=g_fg_generated_frames;}else frames++;
+  if(now-t0>=500000000ull){
+    u64 g=g_fg_generated_frames;
+    fps=(int)(((u64)frames*2000000000ull/(now-t0)+1)/2);
+    shown=g!=g0?fps+(int)(((g-g0)*2000000000ull/(now-t0)+1)/2):-1;   /* -1: no frame generated in the half second */
+    t0=now;frames=0;g0=g;}
+  static const u8 FPS[3]={0x71,0x73,0x6D},REND[4]={0x50,0x79,0x54,0x5E};   /* F P S, r E n d */
+  float s=(float)H/1080.f;if(s<0.5f)s=0.5f;(void)W;
+  int x0=(int)(16*s+0.5f),y0=x0,n=0;
+  if(shown<0){g_fps_rows=1;return fps_row(r,n,max,x0,y0,s,fps,FPS,3);}
+  g_fps_rows=2;
+  n=fps_row(r,n,max,x0,y0,s,shown,FPS,3);
+  return fps_row(r,n,max,x0,y0+(int)(52*s+0.5f),s,fps,REND,4);
 }
 int g_opt_audio_eos_sample_count=1;   /* always on (cinematic clock ~2x and cut music without it); SWR_AUDIO_OLD_EOS=1 = off, tests only */
 char g_opt_pad_map[128]="";   /* physical-position button remapping, empty = identity */

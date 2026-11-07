@@ -29,7 +29,7 @@ fetch python.tar.gz "$PY_URL" "$PY_SHA"
 fetch appimagetool "$TOOL_URL"
 chmod +x "$C/appimagetool"
 
-# the runtime as released on Windows (SWR_RELEASE: no frame generation, no DLSS notes), with the front end. Built with
+# the runtime as released on Windows (SWR_RELEASE: no frame generation), with the front end. Built with
 # the same Bootlin GCC (glibc 2.41, generic x86-64), not the distro's: a distro build needs that distro's glibc, and its
 # CPU level when the distro is built for one (CachyOS znver4's crt files and libstdc++ made it x86-64-v4: "CPU ISA level
 # is lower than required" on a Steam Deck). X11, GL, FFmpeg and Vulkan headers come from this machine after the

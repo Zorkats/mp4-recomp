@@ -121,6 +121,18 @@ bool update_backup_exists();   // Undo has something to put back
 void update_startup();         // Linux: a new AppImage whose recompiler differs asks for the rebuild
 void update_setup_done();      // setup or a rebuild finished: the game code matches this recompiler
 
+// ---------------------------------------------------------------- pinned model downloads (Graphics page; fe_update.cpp, Windows)
+// nvngx_dlss.dll and the AMD frame generation DLLs are not in the release: each is downloaded at a pinned version and
+// kept only if it matches
+#ifdef _WIN32
+enum PinnedStage { PIN_IDLE, PIN_DOWNLOADING, PIN_DONE, PIN_ERROR };
+struct PinnedDownloadState { PinnedStage stage = PIN_IDLE; float pct = 0; std::string error; };
+void dlss_download_async();                 // starts the download on its own thread (does nothing while one runs)
+PinnedDownloadState dlss_download_state();
+void fsr_download_async();                  // AMD frame generation: the same, for its two files
+PinnedDownloadState fsr_download_state();
+#endif
+
 // ---------------------------------------------------------------- controllers (front end only; the game has its own)
 struct PadInfo { int index; std::string name; };
 struct PadState { unsigned long long phys = 0; int lx = 0, ly = 0, rx = 0, ry = 0, lt = 0, rt = 0; std::string name; bool sdl = false; };

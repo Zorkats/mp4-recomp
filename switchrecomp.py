@@ -293,7 +293,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     if gles or gl: srcs += [os.path.join(RT, 'bcn', 'bcn.cpp'), os.path.join(RT, 'bcn', 'bcdec.cpp')]
     # LSFG (uses the user's Lossless.dll), desktop GL only
     spvc = None
-    # SWR_RELEASE=1 (the public Metroid Prime 4 Beyond release): no frame generation, and the renderer without DLSS
+    # SWR_RELEASE=1 (the public Metroid Prime 4 Beyond release): no frame generation
     release = bool(os.environ.get('SWR_RELEASE'))
     if gl and backend in ('win32', 'x11') and not release:
         spvc = os.path.join(RT, 'spvc', 'win' if target_win else 'lin', 'libspvc.a')
@@ -324,7 +324,7 @@ def build_runtime(cc, out, target_win, backend, say, opt='2'):
     if overlay: srcs += [os.path.join(RT, 'beyond_ui', f) for f in ('ui.cpp', 'ov.cpp') + (('fe.cpp', 'fe_sys_linux.cpp', 'fe_update_linux.cpp') if lx_frontend else ('stub_fe.c',))] + [os.path.join(RT, 'imgui', 'src', f) for f in ('imgui.cpp', 'imgui_draw.cpp', 'imgui_tables.cpp', 'imgui_widgets.cpp', 'imgui_impl_opengl3.cpp')]
     elif gl and not frontend: srcs += [os.path.join(RT, 'beyond_ui', 'stub.c')]
     # renderer=vulkan_native: ScarletNX's GPU front end + Vulkan renderer (GPL-3.0), prebuilt by work-profiler/build_snxvk.py
-    snxvk = os.path.join(RT, 'snxvk', 'libsnxvk_new_nodlss.a' if release else 'libsnxvk_new.a')   # ScarletNX main 3f15d931 (work-profiler/build_snxvk2.py)
+    snxvk = os.path.join(RT, 'snxvk', 'libsnxvk_new.a')   # ScarletNX main 3f15d931 with DLSS, release too (work-profiler/build_snxvk2.py)
     if os.environ.get('SWR_SNXVK_LIB'): snxvk = os.path.join(RT, 'snxvk', os.environ['SWR_SNXVK_LIB'])   # e.g. libsnxvk_new.a (re-vendor tests)
     snxvk = snxvk if os.path.isfile(snxvk) and target_win and backend == 'win32' and not os.environ.get('SWR_NO_SNXVK') else None
     cmd = [cc, '-O' + opt, '-w', '-fno-strict-aliasing', '-Wl,-S', '-I', RT, '-I', os.path.join(RT, 'bcn'), '-I', os.path.join(RT, 'spvc'), '-I', os.path.join(RT, 'oh264', 'include'), '-I', os.path.join(RT, 'vp9', 'include'), '-I', os.path.join(RT, 'snxvk', 'deps', 'Vulkan-Headers-1.4.367', 'include')] + srcs + ['-o', out]

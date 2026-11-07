@@ -207,7 +207,7 @@ static Rec recommend() {
                     res_text(r.res, true, r.asp.c_str()).c_str(), r.fps == "1" ? "60 FPS" : (r.fps + " FPS").c_str(), r.asp.c_str(), r.af.c_str(),
                     r.sharp != "0" ? ", light sharpening" : "", r.renderer == "vulkan_native" ? "Native Vulkan (smoothest at high frame rates)" : "OpenGL");
     if (g_hw.ram_gb && g_hw.ram_gb < 8) r.note = fmt("This PC has %d GB of memory; the game needs about 4 GB, so 8 GB is recommended. Close other programs before playing.", g_hw.ram_gb);
-#ifndef SWR_RELEASE   // the public release has no DLSS
+#ifdef _WIN32   // native Vulkan is Windows only
     else if (g_hw.rtx) r.note = "Optional: Graphics > Native Vulkan + NVIDIA DLAA gives the cleanest edges on RTX cards (experimental renderer).";
 #endif
     return r;
@@ -423,7 +423,7 @@ static void page_play() {
     // three tiles
     float w = ImGui::GetContentRegionAvail().x, tw = (w - S(24)) / 3, th = S(108);
     std::string rn = get("renderer"); const char* rl = rn == "vulkan" ? "Vulkan output" : rn == "vulkan_native" ? "Native Vulkan" : "OpenGL";
-    std::string rr = rl; if (rn != "vulkan" && getb("dlss")) rr += " + DLAA";
+    std::string rr = rl; if (rn != "vulkan" && getb("dlss") && file_exists(join(P.exedir, "nvngx_dlss.dll"))) rr += " + DLAA";
     float rs = (float)atof(get("resolution").c_str()); if (rs <= 0) rs = 1;
     std::string fl = get("fps_limit"); std::string ft = fl == "0" ? "Unlimited" : (fl == "1" || fl.empty()) ? "60 FPS" : fl + " FPS";
     struct T { const char* id; const char* title; std::string value; Page page; } tiles[3] = {
@@ -507,15 +507,42 @@ static void page_display() {
     draw_opt("reduce_motion");
 }
 
+#ifdef _WIN32
+// a model's files missing from the game folder: the player downloads them here (fe_update.cpp checks size and SHA-256)
+static void pinned_download_rows(bool fsr) {
+    PinnedDownloadState d = fsr ? fsr_download_state() : dlss_download_state(); bool busy = d.stage == PIN_DOWNLOADING;
+    ImGui::BeginDisabled(busy);
+    if (row_button(fsr ? "##fsrdl" : "##dlssdl", fsr ? "Download AMD FSR frame generation" : "Download NVIDIA DLSS", busy ? "DOWNLOADING" : "DOWNLOAD") && !busy) {
+        if (fsr) fsr_download_async(); else dlss_download_async(); }
+    ImGui::EndDisabled();
+    if (fsr) help_text("Downloads AMD's frame generation files (about 35 MB) from AMD's FidelityFX SDK on GitHub (version 2.4.0), under AMD's license. They need the Microsoft Visual C++ 2015-2022 runtime, which most PCs already have.");
+    else help_text("Downloads nvngx_dlss.dll (about 56 MB) from NVIDIA's DLSS repository on GitHub (github.com/NVIDIA/DLSS, version 310.9.16), under NVIDIA's license, for RTX cards.");
+    if (busy) progress_bar(d.pct / 100.0f, {ImGui::GetContentRegionAvail().x, S(40)}, fmt("%s  \xC2\xB7  %.0f%%", fsr ? "AMD FSR frame generation" : "nvngx_dlss.dll", d.pct).c_str());
+    else if (d.stage == PIN_ERROR) { row_text("Download", "Failed", C_WARN); help_text(d.error.c_str()); }
+}
+#endif
+
 static void page_graphics() {
     page_title("GRAPHICS", "Resolution, upscaling, renderer and image quality.");
     section("RESOLUTION"); resolution_rows(false);
     section("UPSCALING"); draw_opt("upscaler"); if (get("upscaler") == "fsr") draw_opt("fsr_sharpness");
     section("RENDERER"); draw_opt("renderer", get("renderer") == "vulkan_native" ? "EXPERIMENTAL" : nullptr);
-#ifndef SWR_RELEASE   // the public release's renderer has no DLSS
-    if (get("renderer") != "vulkan" && file_exists(join(P.exedir, "nvngx_dlss.dll"))) {   // OpenGL and Native Vulkan
-        bool v = getb("dlss"); if (row_bool("##dlss", "NVIDIA DLAA anti-aliasing", &v)) set("dlss", v ? "1" : "0");
-        help_text("RTX cards. Uses nvngx_dlss.dll from the game folder (not part of this release). Applies at the next start.");
+    if (get("renderer") != "vulkan") {   // OpenGL and Native Vulkan
+        if (file_exists(join(P.exedir, "nvngx_dlss.dll"))) {
+            bool v = getb("dlss"); if (row_bool("##dlss", "NVIDIA DLAA anti-aliasing", &v)) set("dlss", v ? "1" : "0");
+            help_text("RTX cards. Uses nvngx_dlss.dll from the game folder (not part of this release). Applies at the next start.");
+        }
+#ifdef _WIN32
+        else pinned_download_rows(false);
+#endif
+    }
+#ifdef _WIN32
+    if (get("renderer") == "vulkan_native") {   // AMD frame generation: native Vulkan only
+        if (file_exists(join(P.exedir, "amd_fidelityfx_loader_vk.dll")) && file_exists(join(P.exedir, "amd_fidelityfx_framegeneration_vk.dll"))) {
+            bool v = getb("fsr_frame_generation"); if (row_bool("##fsr_frame_generation", "AMD FSR frame generation", &v)) set("fsr_frame_generation", v ? "1" : "0");
+            help_text("Native Vulkan. Generates a frame between each pair the game renders, using the game's motion vectors. Adds a little input latency; best above 60 FPS. Applies at the next start.");
+        }
+        else pinned_download_rows(true);
     }
 #endif
     section("QUALITY");

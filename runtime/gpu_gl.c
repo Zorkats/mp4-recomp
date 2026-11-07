@@ -102,9 +102,6 @@ static GLuint link2(GLuint a, GLuint b, GLuint c3){
 extern int snxvk_dlss_mode;
 static char* dlg_vs_xfb(char* src){
   static const char* decl="out gl_PerVertex { invariant vec4 gl_Position;";
-#ifdef SWR_RELEASE
-  return src;
-#endif
   if(snxvk_dlss_mode<=0 || !src) return src;
   char* d=strstr(src,decl); char* nl=strchr(src,'\n'); if(!d || !nl || nl>d) return src;
   static const char* ext="#extension GL_ARB_enhanced_layouts : require\n";
@@ -2313,11 +2310,7 @@ static struct {
   u64 stable, stable_z, chosen, chosen_z; int streak, missing, done, reset, evals, evaluated;
   Tex *need, *need_z;    /* DLSS runs before the draw that first reads the scene target */
 } g_dlg;
-#ifdef SWR_RELEASE   /* the public release has no DLSS (NVIDIA's licence question is open): off whatever the .ini says */
-static int dlg_on(void){ return 0; }
-#else
 static int dlg_on(void){ return snxvk_dlss_mode>0 && !g_gles && !dlgl_failed(); }
-#endif
 static int dlg_full_hdr(const Tex* t){ return t && t->f.ifmt==GL_R11F_G11F_B10F && g_dlg.scene_w && t->w==g_dlg.scene_w && t->h==g_dlg.scene_h; }
 static int dlg_written(u64 a){ for(int i=0;i<g_dlg.nwritten;i++) if(g_dlg.written[i]==a) return 1; return 0; }
 static Tex* dlg_find(u64 gva, int depth){ for(Tex* t=texh[hkey(gva)];t;t=t->next) if(t->gva==gva && t->is_rt && !!t->f.depth==depth) return t; return NULL; }

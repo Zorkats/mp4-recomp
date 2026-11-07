@@ -2,10 +2,10 @@
 
   make_release.py release OUT_DIR --version X.Y.Z [--exe PATH]   -> OUT_DIR\\Metroid Prime 4 Beyond\\ (the game EXE + recompiler + licences) and a .zip
   make_release.py source  OUT_DIR                -> a clean source tree for GitHub (no game files, no generated code, no binaries
-                                                    we don't have the right to publish, no DLSS)
+                                                    we don't have the right to publish, no NVIDIA DLSS files)
 
-The release EXE is built with SWR_RELEASE=1 (no DLSS, no frame generation): python\\python.exe switchrecomp.py --build-runtime
---cc gcc with SWR_RELEASE=1 set, after work-profiler\\build_imgui.py and SWR_NO_DLSS=1 work-profiler\\build_snxvk.py.
+The release EXE is built with SWR_RELEASE=1 (no frame generation): python\\python.exe switchrecomp.py --build-runtime
+--cc gcc with SWR_RELEASE=1 set, after work-profiler\\build_imgui.py and work-profiler\\build_snxvk2.py.
 Nothing from Nintendo is copied: setup compiles the player's own files on their PC.
 """
 import os, sys, shutil, zipfile, hashlib, fnmatch, time, subprocess
@@ -360,7 +360,7 @@ The release zip bundles the same GCC and Python so that setup can compile the ga
 
 ```
 python\\python.exe work-profiler\\build_imgui.py
-set GLSLANG=<path to glslang.exe 16.6.0> && set SWR_NO_DLSS=1 && python\\python.exe work-profiler\\build_snxvk2.py
+set GLSLANG=<path to glslang.exe 16.6.0> && python\\python.exe work-profiler\\build_snxvk2.py
 set SWR_RELEASE=1 && python\\python.exe switchrecomp.py --build-runtime --cc gcc
 python\\python.exe beyond\\make_release.py release <empty folder> --version X.Y.Z --exe bin\\runtime_win64_win32.exe
 ```
@@ -441,7 +441,9 @@ Each source file keeps its own licence; Apache-2.0 and MIT code is GPL-3.0-compa
 - libvpx and OpenH264: BSD.
 - SDL2 and zlib: zlib licence.
 
-NVIDIA DLAA: the code is here (`dlss.c`), NVIDIA's files are not, and the release is built without it. A build with DLSS is for your own use only: never share it.
+NVIDIA DLAA: the code is here (`dlss.c`). NVIDIA's files are not: the Graphics page downloads `nvngx_dlss.dll` from NVIDIA's GitHub (version 310.9.16, checked by size and SHA-256) for RTX cards, under NVIDIA's license.
+
+AMD FSR frame generation: the headers are in `runtime/snxvk/deps/FidelityFX-SDK-2.4.0` (MIT). AMD's signed DLLs are not: the Graphics page downloads them from AMD's FidelityFX SDK on GitHub (version 2.4.0, checked by size and SHA-256), under AMD's license.
 
 Metroid Prime 4 Beyond is © Nintendo. This project is not affiliated with or endorsed by Nintendo.
 """

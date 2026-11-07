@@ -14,6 +14,7 @@
 int g_snxvk_want;   /* renderer=vulkan_native in the .ini (backend_ini) */
 int g_snxvk_on;     /* the Vulkan renderer started: submissions and presents go to it */
 int snxvk_dlss_mode;   /* ini dlss: 0 off, 1 DLAA, 2 quality, 3 balanced, 4 performance (native Vulkan only) */
+int snxvk_fsr_fg;      /* ini fsr_frame_generation: AMD FSR 3.1 frame generation (native Vulkan only, fsr_fg.c) */
 
 #if defined(SWR_HAVE_SNXVK) && defined(_WIN32)
 #include <windows.h>
@@ -207,13 +208,14 @@ int snxvk_start(void){
   if(!g_ww_ok){ WARN("vulkan_native: guest memory has no write tracking: using OpenGL\n"); return 0; }
   snprintf(g_cachedir,sizeof g_cachedir,"%svulkan_native/",g_exedir); plat_mkdir(g_cachedir);
   { extern int g_opt_vsync; snxvk_opt_vsync=g_opt_vsync; }
-  { /* our .ini into their g_settings (swr_settings.c). Their recording thread records the frame's commands; DLSS and
-       HDR output record directly into the frame's command buffer, so with either on it stays off (both need a restart) */
+  { /* our .ini into their g_settings (swr_settings.c). Their recording thread records the frame's commands; DLSS, FSR
+       frame generation and HDR output record directly into the frame's command buffer, so with any of them on it stays
+       off (all need a restart) */
     extern void snxv_swr_settings_set(float resolution, int shadows, int vsync, int anisotropy, int recording_thread);
     extern float g_opt_resf; extern int g_opt_shadows, g_opt_aniso, g_opt_hdr;
-    int rec= !(snxvk_dlss_mode>0 || g_opt_hdr) && !getenv("SWR_SNXVK_NO_RECORD_THREAD");
+    int rec= !(snxvk_dlss_mode>0 || snxvk_fsr_fg || g_opt_hdr) && !getenv("SWR_SNXVK_NO_RECORD_THREAD");
     snxv_swr_settings_set(g_opt_resf,g_opt_shadows,snxvk_opt_vsync,g_opt_aniso,rec);
-    LOG("vulkan_native: command recording thread %s\n",rec? "on" : "off (DLSS or HDR output records directly)");
+    LOG("vulkan_native: command recording thread %s\n",rec? "on" : "off (DLSS, FSR frame generation or HDR output records directly)");
     /* prebuild_shaders: the shipped-shader pass, the game's system/shd shaders translated in the background at start
        (Metroid Prime 4 has none); SWR_VK_NO_PREPARE=1 = off (tests) */
     { extern void snxv_swr_settings_prepare(int); extern int g_opt_prebuild;

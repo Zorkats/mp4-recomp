@@ -328,6 +328,7 @@ static void ini_apply(const char* k, const char* v){
     else if(!strcmp(k,"anisotropy")){ g_opt_aniso=atoi(v); if(g_opt_aniso<0) g_opt_aniso=0; if(g_opt_aniso>16) g_opt_aniso=16; }
     else if(!strncmp(k,"vk_",3)){ extern int snxvk_tuning_set(const char*,int); snxvk_tuning_set(k,atoi(v)); }   /* native Vulkan tunings (snxvk_glue.c) */
     else if(!strcmp(k,"dlss")){ extern int snxvk_dlss_mode; snxvk_dlss_mode=atoi(v); }   /* native Vulkan: snxvk dlss.c; OpenGL: dlss_gl.c + gpu_gl.c dlg_* */
+    else if(!strcmp(k,"fsr_frame_generation")){ extern int snxvk_fsr_fg; snxvk_fsr_fg=atoi(v); }   /* native Vulkan: snxvk fsr_fg.c */
     else if(!strcmp(k,"texture_threads")){ g_opt_tex_threads=atoi(v); if(g_opt_tex_threads<0) g_opt_tex_threads=0; if(g_opt_tex_threads>16) g_opt_tex_threads=16; }
     else if(!strcmp(k,"fast_forward")) g_opt_ff=atoi(v);
     else if(!strcmp(k,"fast_forward_speed")){ g_opt_ff_speed=atoi(v); if(g_opt_ff_speed<2) g_opt_ff_speed=2; if(g_opt_ff_speed>8) g_opt_ff_speed=8; }
@@ -373,9 +374,8 @@ static const IniOpt INI_GRAPHICS[]={
   {"vk_memory_traps","1","native Vulkan: 1 = what the GPU's shaders write to game memory stays on the GPU until the CPU\n;   touches it (its pages are trapped), instead of being copied back every frame. 0 = copied back"},
   {"vk_dynamic_offsets","1","native Vulkan: 1 = the busiest buffer bindings take their offsets when a draw binds them, so draws\n;   that only move within the same buffers reuse their descriptor sets instead of writing new ones. 0 = new sets"},
   {"renderer","opengl","opengl, or vulkan = the game still renders with OpenGL but Vulkan puts the frames on screen\n;   (falls back to OpenGL output if the GPU driver can't share images between the two; restart required),\n;   or vulkan_native = EXPERIMENTAL native Vulkan renderer from ScarletNX (GPL-3.0; falls back to OpenGL if it can't start)"},
-#ifndef SWR_RELEASE   /* the public release: no DLSS (GPL) and no frame generation in that build */
   {"dlss","0","1 = NVIDIA DLAA anti-aliasing (renderer=opengl or vulkan_native, RTX GPU, nvngx_dlss.dll in the game folder):\n;   DLSS at the internal resolution with the game's own motion vectors; the HUD is untouched. 0 = off"},
-#endif
+  {"fsr_frame_generation","0","1 = AMD FSR 3.1 frame generation (renderer=vulkan_native, Windows; amd_fidelityfx_loader_vk.dll and\n;   amd_fidelityfx_framegeneration_vk.dll in the game folder): one generated frame between each pair the game renders. 0 = off"},
   {NULL,NULL,NULL}};
 static const IniOpt INI_PERF[]={
   {"audio_surround_downmix","1","1 = mix all six audio channels into the stereo output, as the console does (0 = front left/right only: no center channel, so no dialogue)"},

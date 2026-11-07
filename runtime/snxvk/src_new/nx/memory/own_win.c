@@ -40,7 +40,7 @@ typedef struct {
     int landing;  /* being landed by some thread: the others wait */
 } Own;
 
-int g_swr_memory_traps; /* [Graphics] vk_memory_traps (swr_settings.c): own_init arms traps only when it is 1 */
+int g_swr_memory_traps = 1; /* [Graphics] vk_memory_traps (swr_settings.c): own_init arms traps only when it is 1 */
 static u64 g_own_lands, g_own_stop_ns, g_own_stops;
 static OwnHooks g_hooks;
 static int g_traps;

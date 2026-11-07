@@ -47,7 +47,7 @@ Local changes to upstream (marked "SWR" in the code):
   gpu/vk/buffer.c       vk_ww_landed_as: the pages of such a landing noted as landed, so its own writes, which the next
                         epoch's scan reports, don't count as the CPU's while their bytes are unchanged (upstream notes
                         a landing only through the alias pool's mirror, which our runtime lacks)
-  memory/own_win.c      GPU-owned guest memory for Windows ([Graphics] vk_memory_traps=1, default 0), in place of
+  memory/own_win.c      GPU-owned guest memory for Windows ([Graphics] vk_memory_traps, default 1), in place of
                         upstream's own.c, which reads and lands through the alias pool's mirror our runtime lacks.
                         Owned pages are PAGE_NOACCESS; a CPU access to one faults into a vectored handler that lands
                         what the GPU holds of it: the GPU copy is read into host buffers first, then every other thread
@@ -71,7 +71,7 @@ Local changes to upstream (marked "SWR" in the code):
   gpu/vk/swr_glue.c     the renderer interface as plain functions for runtime/snxvk_glue.c, so it mirrors no struct
   gpu/vk/swr_settings.c our .ini's settings (profile=1 also turns on vk_gpu_profile and vk_buffer_stats), and the
                         [Graphics] vk_* switches: vk_fast_writeback (default 1), vk_async_pipelines (default 0),
-                        vk_memory_traps (default 0), vk_dynamic_offsets (default 1)
+                        vk_memory_traps (default 1), vk_dynamic_offsets (default 1)
   gpu/vk/dlss.c, dlss_stub.c: DLSS (private builds only; dlss_stub.c in the public one). Its hooks in render.c,
                         texture.c, device.c and spirv_translate.c are not yet carried over to this commit
 

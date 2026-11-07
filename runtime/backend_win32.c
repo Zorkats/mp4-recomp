@@ -149,16 +149,16 @@ static void set_fullscreen(int on){
     if(GetWindowPlacement(g_hwnd,&g_wp) && GetMonitorInfo(MonitorFromWindow(g_hwnd,MONITOR_DEFAULTTOPRIMARY),&mi)){
       SetWindowLong(g_hwnd,GWL_STYLE,st&~WS_OVERLAPPEDWINDOW);
       SetWindowPos(g_hwnd,HWND_TOP,mi.rcMonitor.left,mi.rcMonitor.top,mi.rcMonitor.right-mi.rcMonitor.left,mi.rcMonitor.bottom-mi.rcMonitor.top,SWP_NOOWNERZORDER|SWP_FRAMECHANGED); }
-    ShowCursor(FALSE); g_fullscreen=1;
+    g_fullscreen=1;   /* the cursor is hidden over the game by WM_SETCURSOR, so the menu can still show it */
   } else if(!on && g_fullscreen){
     SetWindowLong(g_hwnd,GWL_STYLE,st|WS_OVERLAPPEDWINDOW); SetWindowPlacement(g_hwnd,&g_wp);
     SetWindowPos(g_hwnd,NULL,0,0,0,0,SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_NOOWNERZORDER|SWP_FRAMECHANGED);
-    ShowCursor(TRUE); g_fullscreen=0; }
+    g_fullscreen=0; }
 }
 
 /* fullscreen on/off from any thread (in-game menu, settings): done on the window thread */
 /* the front end (same thread as the window) switches fullscreen with the game's own code, cursor kept visible */
-void backend_fe_fullscreen(int on){ if((on!=0)==(g_fullscreen!=0)) return; set_fullscreen(on); if(on) ShowCursor(TRUE); }
+void backend_fe_fullscreen(int on){ if((on!=0)==(g_fullscreen!=0)) return; set_fullscreen(on); }
 void backend_set_fullscreen(int on){ if(g_hwnd) PostMessageA(g_hwnd,WM_APP+11,(WPARAM)(on!=0),0); }
 int backend_is_fullscreen(void){ return g_fullscreen; }
 void backend_release_keys(void){ kbm_release_all(); }
@@ -309,6 +309,7 @@ static LRESULT CALLBACK wndproc(HWND h, UINT m, WPARAM w, LPARAM l){
   case WM_SYSKEYUP: case WM_KEYUP: kbm_key(kbm_from_vk(w,l),0); return 0;   /* also keeps a lone Alt from opening the window menu */
   case WM_KILLFOCUS: kbm_release_all(); g_mouse_down=0; cursor_clip(h,0); ReleaseCapture(); return 0;
   case WM_APP+12: cursor_clip(h,(int)w); return 0;   /* mouse look on / off, from video_poll */
+  case WM_APP+13: { POINT p; if(GetCursorPos(&p) && WindowFromPoint(p)==h) SendMessageA(h,WM_SETCURSOR,(WPARAM)h,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE)); return 0; }   /* the menu opened or closed: show or hide the cursor now, not at the next mouse move */
   case WM_APP+8: { char t[300]; if(w) snprintf(t,sizeof t,"%s  |  RECORDING (F7 to stop)",g_title); else snprintf(t,sizeof t,"%s  |  Video saved in the recordings folder",g_title); SetWindowTextA(h,t); return 0; }
   case WM_APP+10: { char t[400]; char* s=(char*)l; if(s){ snprintf(t,sizeof t,"%s  |  %s",g_title,s); free(s); } else snprintf(t,sizeof t,"%s",g_title); SetWindowTextA(h,t); return 0; }   /* backend_status_win */
   case WM_APP+9: { char t[160]; if(w) snprintf(t,sizeof t,"%s  |  FAST FORWARD x%d (Tab or L3+R3)",g_title,(int)l); else snprintf(t,sizeof t,"%s",g_title); SetWindowTextA(h,t); return 0; }
@@ -353,7 +354,6 @@ static void win_thread(void* arg){
   if(arg){   /* front end first, in this window; the game continues in it after Play */
     g_fe_mode=1; g_fe_result=fe_run(g_hwnd); g_fe_mode=0;
     if(g_fe_result){ SetEvent(g_fe_done); return; }   /* the process ends */
-    if(g_fullscreen) ShowCursor(FALSE);   /* the front end kept the cursor visible in fullscreen */
     SetEvent(g_fe_done); WaitForSingleObject(g_video_go,INFINITE);
     { /* The front end drew with a D3D11 flip-model swapchain. Once DXGI has had such a swapchain on a window, OpenGL
          and Vulkan presents to that window never reach the screen (MEASURED 2026-10-22: after Play the Play screen
@@ -363,7 +363,7 @@ static void win_thread(void* arg){
       if(fs) wp=g_wp; else GetWindowPlacement(old,&wp);   /* fullscreen: the windowed placement it was entered from */
       HWND nw=CreateWindowA("MetroidPrime4RecompWnd",g_title,WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,1280,720,NULL,NULL,hi,NULL);
       if(nw){ g_fe_hwnd=old; g_hwnd=nw;
-        if(fs){ wp.showCmd=SW_HIDE; SetWindowPlacement(nw,&wp); g_fullscreen=0; ShowCursor(TRUE); set_fullscreen(1); }   /* as F11 does: borderless over the monitor, g_wp saved */
+        if(fs){ wp.showCmd=SW_HIDE; SetWindowPlacement(nw,&wp); g_fullscreen=0; set_fullscreen(1); }   /* as F11 does: borderless over the monitor, g_wp saved */
         else SetWindowPlacement(nw,&wp);   /* normal or maximized, as the player left it */
         ShowWindow(nw,SW_SHOW); SetForegroundWindow(nw);
         ShowWindow(old,SW_HIDE); DestroyWindow(old);
@@ -516,6 +516,9 @@ static void cursor_sync(void){
   u64 now=plat_ns();
   if(want==clipped && !(want && now-last>500000000ull)) return;   /* while on, renewed twice a second: the window may have moved */
   clipped=want; last=now; PostMessageA(g_hwnd,WM_APP+12,(WPARAM)want,0); }
+static void cursor_menu_sync(void){
+  static int was=-1; int open=ov_is_open();
+  if(open!=was){ was=open; PostMessageA(g_hwnd,WM_APP+13,0,0); } }
 
 void video_poll(void){
   u64 k=0, b=0; i32 lx, ly, rx, ry;
@@ -545,7 +548,7 @@ void video_poll(void){
     u64 el=(plat_ns()-g_start)/1000000ull; const char* p=g_script;
     while(*p){ u64 t=strtoull(p,(char**)&p,10); if(*p!=':') break; p++; u64 m=strtoull(p,(char**)&p,16); if(el>=t && el<t+300){ b|=m; if(m&(1ull<<16))lx=-32767; if(m&(1ull<<18))lx=32767; if(m&(1ull<<17))ly=32767; if(m&(1ull<<19))ly=-32767; if(m&(1ull<<20))rx=-32767; if(m&(1ull<<22))rx=32767; if(m&(1ull<<21))ry=32767; if(m&(1ull<<23))ry=-32767; } if(*p==',') p++; } }
   kbm_mouse(&b,&rx,&ry,!ov_is_open());   /* the menu uses the mouse itself while open */
-  cursor_sync();
+  cursor_sync(); cursor_menu_sync();
   test_input_apply(&b,&lx,&ly,&rx,&ry);
   if(test_replay){ phys=b; plx=lx; ply=ly; }   /* tests drive the menu with the replayed buttons */
   { extern int ov_pad(unsigned long long phys, int lx, int ly);   /* beyond_ui/ov.cpp: 1 = the menu has the controller */
